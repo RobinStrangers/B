@@ -626,8 +626,11 @@ class LighterGateway:
             )
         try:
             parsed = json.loads(tx_info)
-            if not isinstance(parsed, dict) or "L1Sig" in parsed:
+            if not isinstance(parsed, dict):
                 raise ValueError("invalid tx info")
+            # Match the official Lighter Python SDK: the signer may include an
+            # L1Sig field in txInfo already. Replace it with the signature we
+            # just verified against the wallet instead of rejecting the challenge.
             parsed["L1Sig"] = signature
             signed_tx_info = json.dumps(parsed, separators=(",", ":"))
         except (ValueError, json.JSONDecodeError) as exc:
