@@ -573,7 +573,7 @@ export function useRobinhoodAccount() {
       throw new Error('Enter a valid USDG amount with no more than 6 decimal places.');
     }
     const rawAmount = parseUnits(normalizedAmount, ROBINHOOD_USDG_DECIMALS);
-    if (rawAmount <= 0n) throw new Error('Deposit amount must be greater than zero.');
+    if (rawAmount <= BigInt(0)) throw new Error('Deposit amount must be greater than zero.');
 
     const usdgBalance = assets.find((asset) => asset.symbol === 'USDG');
     if (usdgBalance?.status === 'live' && usdgBalance.balance && /^\d+(?:\.\d+)?$/.test(usdgBalance.balance)) {
