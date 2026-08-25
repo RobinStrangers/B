@@ -124,7 +124,8 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
     : undefined;
   const depositReady = mode === 'deposit'
     && selectedAsset === 'USDG'
-    && Boolean(amount)
+    && /^\d+(?:\.\d+)?$/.test(amount)
+    && Number(amount) >= 1
     && account.isRobinhoodChain
     && account.ownershipVerified
     && !account.busy;
@@ -250,7 +251,7 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
 
   const handleDeposit = async () => {
     if (!depositReady) return;
-    setDepositNotice('Preparing a direct USDG deposit to Robinhood Lighter…');
+    setDepositNotice('Preparing your Robinhood Lighter deposit address…');
     setDepositTxHash('');
     try {
       const result = await account.depositUsdg(amount);
@@ -324,7 +325,7 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
               <div className="account-transfer-summary"><div><span>Route</span><strong>Wallet → Robinhood Lighter</strong></div><div><span>Network</span><strong>Robinhood Chain · 4663</strong></div><div><span>Collateral</span><strong>USDG · Perps margin</strong></div></div>
               <button className="account-transfer-submit" type="button" disabled={!depositReady} onClick={() => void handleDeposit()}>{account.busy ? 'Waiting for wallet / chain…' : !account.ownershipVerified ? 'Verify wallet to deposit' : 'Deposit USDG & onboard'}</button>
               {depositNotice && <p className="account-transfer-notice" role="status">{depositNotice}{depositTxHash && <a href={`https://robinhoodchain.blockscout.com/tx/${depositTxHash}`} target="_blank" rel="noreferrer"> View transaction ↗</a>}</p>}
-              <p className="account-transfer-warning">USDG moves directly from your self-custody wallet into Robinhood Lighter's margin contract. Aventa never takes custody. First-time wallets are credited by the venue from this deposit and Aventa watches for the resulting Lighter account automatically.</p>
+              <p className="account-transfer-warning">Aventa requests your persistent Robinhood Lighter deposit address, then your wallet transfers USDG directly to it on Robinhood Chain. Aventa never takes custody. Minimum deposit is 1 USDG; first-time wallets are onboarded by the venue and Aventa watches for the resulting Lighter account automatically.</p>
             </div>
           )}
 

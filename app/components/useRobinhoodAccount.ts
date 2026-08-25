@@ -1,16 +1,12 @@
 'use client';
 
 import { useWallets } from '@privy-io/react-auth';
-import { decodeFunctionResult, encodeFunctionData, parseUnits, type Address, type Hex } from 'viem';
+import { encodeFunctionData, parseUnits, type Address } from 'viem';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAventaAuth } from './useAventaAuth';
 import {
   AVENTA_TREASURY_ADDRESS,
-  ROBINHOOD_LIGHTER_DEPOSIT_ABI,
-  ROBINHOOD_LIGHTER_PERPS_ROUTE,
-  ROBINHOOD_LIGHTER_PROXY,
   ROBINHOOD_USDG_ADDRESS,
-  ROBINHOOD_USDG_ASSET_INDEX,
   ROBINHOOD_USDG_DECIMALS,
   USDG_ERC20_ABI,
 } from '../lib/lighter-robinhood';
@@ -705,7 +701,10 @@ export function useRobinhoodAccount() {
       throw new Error('Enter a valid USDG amount with no more than 6 decimal places.');
     }
     const rawAmount = parseUnits(normalizedAmount, ROBINHOOD_USDG_DECIMALS);
-    if (rawAmount <= BigInt(0)) throw new Error('Deposit amount must be greater than zero.');
+    const minimumAmount = parseUnits('1', ROBINHOOD_USDG_DECIMALS);
+    if (rawAmount < minimumAmount) {
+      throw new Error('Robinhood Lighter requires a minimum deposit of 1 USDG.');
+    }
 
     const usdgBalance = assets.find((asset) => asset.symbol === 'USDG');
     if (usdgBalance?.status === 'live' && usdgBalance.balance && /^\d+(?:\.\d+)?$/.test(usdgBalance.balance)) {
@@ -742,93 +741,64 @@ export function useRobinhoodAccount() {
       const verified = ownershipVerified || await verifyOwnershipWithProvider(provider, activeAccount);
       if (!verified) throw new Error('Verify wallet ownership before depositing trading collateral.');
 
-      // This preflight rejects the treasury wallet/account and records whether
-      // Lighter already has an account for this L1 address. A missing account is
-      // expected for first-time users; the deposit itself is addressed to the wallet.
       await onboardingSnapshot(activeAccount);
 
-      const allowanceData = encodeFunctionData({
-        abi: USDG_ERC20_ABI,
-        functionName: 'allowance',
-        args: [activeAccount as Address, ROBINHOOD_LIGHTER_PROXY],
+      const intentResponse = await authFetch('/api/venue/deposit-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: activeAccount }),
       });
-      const allowanceResult = await robinhoodReadRpc('eth_call', [
-        { to: ROBINHOOD_USDG_ADDRESS, data: allowanceData },
-        'latest',
-      ]);
-      if (typeof allowanceResult !== 'string') throw new Error('USDG allowance could not be read from Robinhood Chain.');
-      const allowance = decodeFunctionResult({
-        abi: USDG_ERC20_ABI,
-        functionName: 'allowance',
-        data: allowanceResult as Hex,
-      });
-
-      if (allowance < rawAmount) {
-        const approvalData = encodeFunctionData({
-          abi: USDG_ERC20_ABI,
-          functionName: 'approve',
-          args: [ROBINHOOD_LIGHTER_PROXY, rawAmount],
-        });
-        const approvalRequest = { from: activeAccount, to: ROBINHOOD_USDG_ADDRESS, data: approvalData, value: '0x0' };
-        let approvalGas: unknown;
-        try {
-          approvalGas = await robinhoodReadRpc('eth_estimateGas', [approvalRequest]);
-        } catch (approvalSimulationError) {
-          throw new Error(`USDG approval simulation failed: ${providerMessage(approvalSimulationError)}`);
-        }
-        if (typeof approvalGas !== 'string' || !/^0x[a-fA-F0-9]+$/.test(approvalGas)) {
-          throw new Error('USDG approval simulation did not return a valid gas estimate.');
-        }
-        let approvalHash: unknown;
-        try {
-          approvalHash = await provider.request({
-            method: 'eth_sendTransaction',
-            params: [{ ...approvalRequest, gas: bufferedGas(approvalGas) }],
-          });
-        } catch (approvalError) {
-          throw new Error(`USDG approval failed: ${providerMessage(approvalError)}`);
-        }
-        if (typeof approvalHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(approvalHash)) {
-          throw new Error('The wallet did not return a valid USDG approval transaction hash.');
-        }
-        await waitForReceipt(approvalHash);
+      const intentPayload = await intentResponse.json().catch(() => undefined) as unknown;
+      if (!intentResponse.ok) {
+        throw new Error(verificationResponseMessage(intentPayload, 'Robinhood Lighter deposit address could not be created.'));
+      }
+      const intentAddress = intentPayload && typeof intentPayload === 'object'
+        ? (intentPayload as Record<string, unknown>).intentAddress
+        : undefined;
+      if (typeof intentAddress !== 'string' || !isAddress(intentAddress)) {
+        throw new Error('Robinhood Lighter returned an invalid deposit address.');
       }
 
-      const depositData = encodeFunctionData({
-        abi: ROBINHOOD_LIGHTER_DEPOSIT_ABI,
-        functionName: 'deposit',
-        args: [
-          activeAccount as Address,
-          ROBINHOOD_USDG_ASSET_INDEX,
-          ROBINHOOD_LIGHTER_PERPS_ROUTE,
-          rawAmount,
-        ],
+      const transferData = encodeFunctionData({
+        abi: USDG_ERC20_ABI,
+        functionName: 'transfer',
+        args: [intentAddress as Address, rawAmount],
       });
-      const depositRequest = { from: activeAccount, to: ROBINHOOD_LIGHTER_PROXY, data: depositData, value: '0x0' };
-      let depositGas: unknown;
+      const transferRequest = {
+        from: activeAccount,
+        to: ROBINHOOD_USDG_ADDRESS,
+        data: transferData,
+        value: '0x0',
+      };
+
+      let transferGas: unknown;
       try {
-        depositGas = await robinhoodReadRpc('eth_estimateGas', [depositRequest]);
-      } catch (depositSimulationError) {
-        throw new Error(`Lighter deposit simulation failed: ${providerMessage(depositSimulationError)}`);
+        transferGas = await robinhoodReadRpc('eth_estimateGas', [transferRequest]);
+      } catch (transferSimulationError) {
+        throw new Error(`USDG deposit transfer simulation failed: ${providerMessage(transferSimulationError)}`);
       }
-      if (typeof depositGas !== 'string' || !/^0x[a-fA-F0-9]+$/.test(depositGas)) {
-        throw new Error('Lighter deposit simulation did not return a valid gas estimate.');
+      if (typeof transferGas !== 'string' || !/^0x[a-fA-F0-9]+$/.test(transferGas)) {
+        throw new Error('USDG deposit transfer simulation did not return a valid gas estimate.');
       }
+
       let depositHash: unknown;
       try {
         depositHash = await provider.request({
           method: 'eth_sendTransaction',
-          params: [{ ...depositRequest, gas: bufferedGas(depositGas) }],
+          params: [{ ...transferRequest, gas: bufferedGas(transferGas) }],
         });
-      } catch (depositSendError) {
-        throw new Error(`Lighter deposit failed: ${providerMessage(depositSendError)}`);
+      } catch (transferError) {
+        throw new Error(`USDG deposit transfer failed: ${providerMessage(transferError)}`);
       }
       if (typeof depositHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(depositHash)) {
-        throw new Error('The wallet did not return a valid Lighter deposit transaction hash.');
+        throw new Error('The wallet did not return a valid USDG deposit transaction hash.');
       }
+
       await waitForReceipt(depositHash);
       await refreshBalances(activeAccount);
-      window.dispatchEvent(new CustomEvent('aventa:deposit-confirmed', { detail: { address: activeAccount, txHash: depositHash } }));
+      window.dispatchEvent(new CustomEvent('aventa:deposit-confirmed', {
+        detail: { address: activeAccount, txHash: depositHash, intentAddress },
+      }));
 
       const immediateSnapshot = await onboardingSnapshot(activeAccount).catch(() => undefined);
       if (immediateSnapshot?.accountExists && immediateSnapshot.accountIndexes.length) {
@@ -837,10 +807,8 @@ export function useRobinhoodAccount() {
         return { txHash: depositHash, accountReady: true as const, accountIndex };
       }
 
-      // Venue indexing can lag the L1 receipt. Do not keep the wallet UI blocked
-      // while that happens; continue bounded discovery in the background.
       void (async () => {
-        const deadline = Date.now() + 90_000;
+        const deadline = Date.now() + 120_000;
         while (Date.now() < deadline) {
           await sleep(2_500);
           const snapshot = await onboardingSnapshot(activeAccount).catch(() => undefined);
@@ -861,7 +829,7 @@ export function useRobinhoodAccount() {
     } finally {
       setBusy(false);
     }
-  }, [address, assets, connectedWallet, ownershipVerified, refreshBalances, resolveProvider, verifyOwnershipWithProvider]);
+  }, [address, assets, authFetch, connectedWallet, ownershipVerified, refreshBalances, resolveProvider, verifyOwnershipWithProvider]);
 
   const disconnect = useCallback(async () => {
     requestGeneration.current += 1;
