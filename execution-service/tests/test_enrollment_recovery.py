@@ -6,7 +6,7 @@ from service import ExecutionService, RequestContext
 
 
 class RecoveryRepository:
-    def __init__(self, *, signer_pending=True):
+    def __init__(self, *, signer_pending=True, challenge_present=True):
         self.profile = None
         self.secret = {
             "state": "PENDING" if signer_pending else "ACTIVE",
@@ -16,6 +16,7 @@ class RecoveryRepository:
             "privateKey": "private-key",
             "publicKey": "public-key",
         }
+        self.challenge_present = challenge_present
         self.challenge = {
             "challengeId": "ab" * 16,
             "kind": "CHANGE_API_KEY",
@@ -34,7 +35,7 @@ class RecoveryRepository:
         return dict(self.secret)
 
     def get_challenge(self, subject_hash, challenge_id):
-        if challenge_id != self.challenge["challengeId"]:
+        if not self.challenge_present or challenge_id != self.challenge["challengeId"]:
             return None
         return dict(self.challenge)
 
@@ -61,6 +62,11 @@ class RecoveryGateway:
     def __init__(self, active):
         self.active = active
         self.checks = 0
+        self.account_checks = 0
+
+    async def accounts_for_wallet(self, wallet_address):
+        self.account_checks += 1
+        return [{"index": 123}]
 
     async def check_signer(self, account_index, api_key_index, private_key):
         self.checks += 1
@@ -85,6 +91,23 @@ class EnrollmentRecoveryTests(unittest.TestCase):
         self.assertEqual(repo.secret["state"], "ACTIVE")
         self.assertEqual(repo.challenge["state"], "CONSUMED")
         self.assertTrue(repo.released)
+        self.assertEqual(gateway.checks, 1)
+
+
+    def test_pending_key_recovers_after_challenge_ttl_deletion(self):
+        repo = RecoveryRepository(challenge_present=False)
+        gateway = RecoveryGateway(True)
+        service = ExecutionService(self.settings, repo, gateway)
+
+        profile = asyncio.run(service._reconcile_pending_key_enrollment(self.context))
+
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["keyStatus"], "ACTIVE")
+        self.assertEqual(profile["accountIndex"], 123)
+        self.assertEqual(profile["apiKeyIndex"], 4)
+        self.assertEqual(repo.secret["state"], "ACTIVE")
+        self.assertFalse(repo.released)
+        self.assertEqual(gateway.account_checks, 1)
         self.assertEqual(gateway.checks, 1)
 
     def test_pending_key_is_not_finalized_until_lighter_confirms_it(self):

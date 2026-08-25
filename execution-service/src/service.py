@@ -227,18 +227,30 @@ class ExecutionService:
 
     def _pending_key_material(
         self, context: RequestContext
-    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    ) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
         try:
             secret = self.repo.get_secret(context.subject_hash)
         except ServiceError:
             return None
         if secret.get("state") != "PENDING":
             return None
-        challenge_id = secret.get("challengeId")
-        if not isinstance(challenge_id, str) or not challenge_id:
+        try:
+            int(secret["accountIndex"])
+            int(secret["apiKeyIndex"])
+        except (KeyError, TypeError, ValueError):
             return None
-        challenge = self.repo.get_challenge(context.subject_hash, challenge_id)
-        if not challenge or challenge.get("kind") != "CHANGE_API_KEY":
+
+        challenge = None
+        challenge_id = secret.get("challengeId")
+        if isinstance(challenge_id, str) and challenge_id:
+            challenge = self.repo.get_challenge(context.subject_hash, challenge_id)
+        # DynamoDB TTL may remove an expired challenge before readiness has a
+        # chance to reconcile an ambiguous venue submission. The encrypted
+        # signer secret intentionally outlives that short-lived challenge, so
+        # keep it as recovery material and re-validate wallet ownership below.
+        if challenge is None:
+            return secret, None
+        if challenge.get("kind") != "CHANGE_API_KEY":
             return None
         if str(challenge.get("walletAddress", "")).lower() != context.wallet_address.lower():
             return None
@@ -296,10 +308,26 @@ class ExecutionService:
         if pending is None:
             return None
         secret, challenge = pending
+        account_index = int(secret["accountIndex"])
+        api_key_index = int(secret["apiKeyIndex"])
+        if challenge is None:
+            # The challenge was short-lived and may already have been removed
+            # by TTL. Re-bind the retained signer material to the currently
+            # authenticated wallet before using it for recovery.
+            try:
+                accounts = await self.gateway.accounts_for_wallet(context.wallet_address)
+            except Exception:
+                logger.warning(
+                    "Pending signer ownership reconciliation failed",
+                    extra={"subject_hash": context.subject_hash},
+                )
+                return None
+            if account_index not in {int(account["index"]) for account in accounts}:
+                return None
         try:
             active = await self.gateway.check_signer(
-                int(challenge["accountIndex"]),
-                int(challenge["apiKeyIndex"]),
+                account_index,
+                api_key_index,
                 secret["privateKey"],
             )
         except Exception:
@@ -318,8 +346,8 @@ class ExecutionService:
                     context.subject_hash,
                     {
                         "walletAddress": context.wallet_address,
-                        "accountIndex": int(challenge["accountIndex"]),
-                        "apiKeyIndex": int(challenge["apiKeyIndex"]),
+                        "accountIndex": account_index,
+                        "apiKeyIndex": api_key_index,
                         "keyStatus": "PROVISIONING",
                         "integratorApproved": False,
                     },
@@ -339,9 +367,9 @@ class ExecutionService:
             return None
         if str(profile.get("walletAddress", "")).lower() != context.wallet_address.lower():
             return None
-        if int(profile.get("accountIndex", -1)) != int(challenge["accountIndex"]):
+        if int(profile.get("accountIndex", -1)) != account_index:
             return None
-        if int(profile.get("apiKeyIndex", -1)) != int(challenge["apiKeyIndex"]):
+        if int(profile.get("apiKeyIndex", -1)) != api_key_index:
             return None
         try:
             profile = self._finish_local_key_activation(
