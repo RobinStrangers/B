@@ -225,12 +225,148 @@ class ExecutionService:
         self._treasury_verified_at = now
         return verified
 
+    def _pending_key_material(
+        self, context: RequestContext
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        try:
+            secret = self.repo.get_secret(context.subject_hash)
+        except ServiceError:
+            return None
+        if secret.get("state") != "PENDING":
+            return None
+        challenge_id = secret.get("challengeId")
+        if not isinstance(challenge_id, str) or not challenge_id:
+            return None
+        challenge = self.repo.get_challenge(context.subject_hash, challenge_id)
+        if not challenge or challenge.get("kind") != "CHANGE_API_KEY":
+            return None
+        if str(challenge.get("walletAddress", "")).lower() != context.wallet_address.lower():
+            return None
+        try:
+            if int(challenge["accountIndex"]) != int(secret["accountIndex"]):
+                return None
+            if int(challenge["apiKeyIndex"]) != int(secret["apiKeyIndex"]):
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        return secret, challenge
+
+    def _finish_local_key_activation(
+        self,
+        context: RequestContext,
+        profile: dict[str, Any],
+        secret: dict[str, Any],
+        challenge: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if secret.get("state") != "ACTIVE":
+            self.repo.put_secret(
+                context.subject_hash,
+                {
+                    **secret,
+                    "state": "ACTIVE",
+                    "activatedAt": int(time.time()),
+                },
+            )
+        if challenge is not None and challenge.get("state") == "PENDING":
+            try:
+                self.repo.consume_challenge(
+                    context.subject_hash,
+                    str(challenge["challengeId"]),
+                )
+            except ServiceError as exc:
+                if exc.code != "CHALLENGE_USED":
+                    raise
+        if challenge is not None and challenge.get("leaseOwner"):
+            self.repo.release_user_lease(
+                context.subject_hash,
+                "KEY_ENROLLMENT",
+                str(challenge["leaseOwner"]),
+            )
+        if profile.get("keyStatus") != "ACTIVE":
+            profile = self.repo.update_profile(
+                context.subject_hash,
+                {"keyStatus": "ACTIVE"},
+            )
+        return profile
+
+    async def _reconcile_pending_key_enrollment(
+        self, context: RequestContext
+    ) -> dict[str, Any] | None:
+        pending = self._pending_key_material(context)
+        if pending is None:
+            return None
+        secret, challenge = pending
+        try:
+            active = await self.gateway.check_signer(
+                int(challenge["accountIndex"]),
+                int(challenge["apiKeyIndex"]),
+                secret["privateKey"],
+            )
+        except Exception:
+            logger.warning(
+                "Pending Lighter key reconciliation check failed",
+                extra={"subject_hash": context.subject_hash},
+            )
+            return None
+        if not active:
+            return None
+
+        profile = self.repo.get_profile(context.subject_hash)
+        if profile is None:
+            try:
+                self.repo.create_profile(
+                    context.subject_hash,
+                    {
+                        "walletAddress": context.wallet_address,
+                        "accountIndex": int(challenge["accountIndex"]),
+                        "apiKeyIndex": int(challenge["apiKeyIndex"]),
+                        "keyStatus": "PROVISIONING",
+                        "integratorApproved": False,
+                    },
+                    maximum=self.settings.max_enrolled_users,
+                )
+            except Exception:
+                profile = self.repo.get_profile(context.subject_hash)
+                if profile is None:
+                    logger.exception(
+                        "Venue key is active but execution profile recovery failed",
+                        extra={"subject_hash": context.subject_hash},
+                    )
+                    return None
+            else:
+                profile = self.repo.get_profile(context.subject_hash)
+        if profile is None:
+            return None
+        if str(profile.get("walletAddress", "")).lower() != context.wallet_address.lower():
+            return None
+        if int(profile.get("accountIndex", -1)) != int(challenge["accountIndex"]):
+            return None
+        if int(profile.get("apiKeyIndex", -1)) != int(challenge["apiKeyIndex"]):
+            return None
+        try:
+            profile = self._finish_local_key_activation(
+                context, profile, secret, challenge
+            )
+        except Exception:
+            logger.exception(
+                "Venue key is active but local activation cleanup is incomplete",
+                extra={"subject_hash": context.subject_hash},
+            )
+            return self.repo.get_profile(context.subject_hash)
+        logger.info(
+            "Recovered Lighter key enrollment after ambiguous venue submission",
+            extra={"subject_hash": context.subject_hash},
+        )
+        return profile
+
     async def readiness(
         self,
         context: RequestContext,
         market_symbol: str | None = None,
     ) -> ServiceResult:
         profile = self.repo.get_profile(context.subject_hash)
+        if profile is None:
+            profile = await self._reconcile_pending_key_enrollment(context)
         count = self.repo.enrolled_count()
         profile_bound = bool(
             profile
@@ -261,7 +397,15 @@ class ExecutionService:
                     secret["privateKey"],
                 )
                 if key_active:
-                    profile = self.repo.update_profile(context.subject_hash, {"keyStatus": "ACTIVE"})
+                    challenge = None
+                    challenge_id = secret.get("challengeId")
+                    if isinstance(challenge_id, str) and challenge_id:
+                        challenge = self.repo.get_challenge(
+                            context.subject_hash, challenge_id
+                        )
+                    profile = self._finish_local_key_activation(
+                        context, profile, secret, challenge
+                    )
             except Exception:
                 key_active = False
         try:
@@ -506,28 +650,47 @@ class ExecutionService:
             secret = self.repo.get_secret(context.subject_hash)
             if secret.get("state") != "PENDING" or secret.get("challengeId") != completion.challenge_id:
                 raise ServiceError("SIGNER_KEY_STATE_INVALID", "Pending execution key is unavailable", http_status=409)
-            submission = await self.gateway.submit_l1_signed_tx(
-                int(challenge["accountIndex"]),
-                int(challenge["apiKeyIndex"]),
-                secret["privateKey"],
-                tx_type=int(challenge["txType"]),
-                tx_info=str(challenge["txInfo"]),
-                message=str(challenge["messageToSign"]),
-                message_encoding=str(challenge["messageEncoding"]),
-                signature=completion.signature,
-                expected_wallet=context.wallet_address,
-            )
-            key_status = "PROVISIONING"
+            submission = None
+            venue_outcome_reconciled = False
             try:
-                await brief_settlement_delay()
-                if await self.gateway.check_signer(
+                submission = await self.gateway.submit_l1_signed_tx(
                     int(challenge["accountIndex"]),
                     int(challenge["apiKeyIndex"]),
                     secret["privateKey"],
-                ):
-                    key_status = "ACTIVE"
-            except Exception:
-                key_status = "PROVISIONING"
+                    tx_type=int(challenge["txType"]),
+                    tx_info=str(challenge["txInfo"]),
+                    message=str(challenge["messageToSign"]),
+                    message_encoding=str(challenge["messageEncoding"]),
+                    signature=completion.signature,
+                    expected_wallet=context.wallet_address,
+                )
+            except VenueAmbiguous as ambiguous:
+                # A timeout can happen after Lighter has accepted ChangePubKey.
+                # Never blindly resubmit: first ask the venue whether our key is active.
+                try:
+                    await brief_settlement_delay()
+                    venue_outcome_reconciled = await self.gateway.check_signer(
+                        int(challenge["accountIndex"]),
+                        int(challenge["apiKeyIndex"]),
+                        secret["privateKey"],
+                    )
+                except Exception:
+                    venue_outcome_reconciled = False
+                if not venue_outcome_reconciled:
+                    raise ambiguous
+
+            key_status = "ACTIVE" if venue_outcome_reconciled else "PROVISIONING"
+            if not venue_outcome_reconciled:
+                try:
+                    await brief_settlement_delay(submission)
+                    if await self.gateway.check_signer(
+                        int(challenge["accountIndex"]),
+                        int(challenge["apiKeyIndex"]),
+                        secret["privateKey"],
+                    ):
+                        key_status = "ACTIVE"
+                except Exception:
+                    key_status = "PROVISIONING"
             try:
                 self.repo.create_profile(
                     context.subject_hash,
@@ -558,7 +721,21 @@ class ExecutionService:
                 raise VenueAmbiguous(
                     "The venue accepted the key, but local enrollment finalization is incomplete"
                 ) from exc
-            return "SUBMITTED", {"keyStatus": key_status, **submission.public()}
+            submission_details = (
+                submission.public()
+                if submission is not None
+                else {
+                    "venueCode": None,
+                    "venueTxHash": None,
+                    "venueMessage": "Lighter key activation confirmed after ambiguous submission",
+                    "predictedExecutionTimeMs": None,
+                }
+            )
+            return "SUBMITTED", {
+                "keyStatus": key_status,
+                "venueOutcomeReconciled": venue_outcome_reconciled,
+                **submission_details,
+            }
 
         return await self._idempotent(context, "enrollment-key-complete", body, work)
 
