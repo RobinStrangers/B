@@ -1,7 +1,8 @@
 'use client';
 
-import { usePrivy, useWallets } from '@privy-io/react-auth';
+import { useWallets } from '@privy-io/react-auth';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAventaAuth } from './useAventaAuth';
 
 export type Eip1193Provider = {
   request: (request: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -105,8 +106,34 @@ function parseBalanceSnapshot(value: unknown): { assets: WalletAssetBalance[]; u
   return assets.length === root.assets.length ? { assets, updatedAt: root.updatedAt } : undefined;
 }
 
+
+function verifiedWalletFromSummary(value: unknown, address: string) {
+  if (!value || typeof value !== 'object') return false;
+  const root = value as Record<string, unknown>;
+  if (!Array.isArray(root.verifiedWallets)) return false;
+  const normalizedAddress = address.toLowerCase();
+  return root.verifiedWallets.some((wallet) => {
+    if (!wallet || typeof wallet !== 'object') return false;
+    const row = wallet as Record<string, unknown>;
+    return row.chainId === 4663
+      && typeof row.address === 'string'
+      && row.address.toLowerCase() === normalizedAddress
+      && (row.verificationMethod === 'siwe_eoa'
+        || row.verificationMethod === 'eip1271'
+        || row.verificationMethod === 'privy_attestation');
+  });
+}
+
+function verificationResponseMessage(payload: unknown, fallback: string) {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const root = payload as Record<string, unknown>;
+  const error = root.error && typeof root.error === 'object' ? root.error as Record<string, unknown> : null;
+  return typeof error?.message === 'string' && error.message.trim() ? error.message : fallback;
+}
+
 export function useRobinhoodAccount() {
-  const privy = usePrivy();
+  const privy = useAventaAuth();
+  const { authFetch } = privy;
   const { wallets, ready: walletsReady } = useWallets();
   const [address, setAddress] = useState('');
   const [chainId, setChainId] = useState('');
@@ -115,6 +142,8 @@ export function useRobinhoodAccount() {
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState<number>();
   const [walletDisabled, setWalletDisabled] = useState(false);
+  const [ownershipVerified, setOwnershipVerified] = useState(false);
+  const [verificationBusy, setVerificationBusy] = useState(false);
   const requestGeneration = useRef(0);
   const providerRef = useRef<Eip1193Provider | undefined>(undefined);
   const walletCandidate = useMemo(
@@ -159,6 +188,94 @@ export function useRobinhoodAccount() {
     }
   }, []);
 
+  const refreshOwnershipVerification = useCallback(async (account: string) => {
+    if (!privy.authenticated || !account) {
+      setOwnershipVerified(false);
+      return false;
+    }
+    try {
+      const response = await authFetch('/api/account/summary', { cache: 'no-store' });
+      if (!response.ok) return false;
+      const verified = verifiedWalletFromSummary(await response.json(), account);
+      setOwnershipVerified(verified);
+      return verified;
+    } catch {
+      return false;
+    }
+  }, [authFetch, privy.authenticated]);
+
+  const verifyOwnershipWithProvider = useCallback(async (
+    provider: Eip1193Provider,
+    account: string,
+  ) => {
+    const normalizedAccount = account.toLowerCase();
+    if (!/^0x[a-f0-9]{40}$/.test(normalizedAccount)) {
+      throw new Error('The connected wallet address is invalid.');
+    }
+    const currentChain = await provider.request({ method: 'eth_chainId' });
+    if (typeof currentChain !== 'string' || currentChain.toLowerCase() !== ROBINHOOD_CHAIN_ID) {
+      throw new Error('Switch to Robinhood Chain before verifying this wallet.');
+    }
+
+    const alreadyVerified = await refreshOwnershipVerification(normalizedAccount);
+    if (alreadyVerified) return true;
+
+    setVerificationBusy(true);
+    try {
+      const challengeResponse = await authFetch('/api/account/wallets/challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: normalizedAccount, chainId: 4663 }),
+      });
+      const challengePayload = await challengeResponse.json().catch(() => undefined);
+      if (!challengeResponse.ok) {
+        throw new Error(verificationResponseMessage(challengePayload, 'Wallet verification could not start.'));
+      }
+      if (!challengePayload || typeof challengePayload !== 'object') {
+        throw new Error('Wallet verification returned an invalid challenge.');
+      }
+      const challenge = challengePayload as Record<string, unknown>;
+      if (
+        typeof challenge.challengeId !== 'string'
+        || typeof challenge.message !== 'string'
+        || typeof challenge.address !== 'string'
+        || challenge.address.toLowerCase() !== normalizedAccount
+        || challenge.chainId !== 4663
+      ) {
+        throw new Error('Wallet verification returned an invalid challenge.');
+      }
+
+      const signature = await provider.request({
+        method: 'personal_sign',
+        params: [challenge.message, account],
+      });
+      if (typeof signature !== 'string' || !/^0x[a-fA-F0-9]{130}$/.test(signature)) {
+        throw new Error('The wallet did not return a valid ownership signature.');
+      }
+
+      const verifyResponse = await authFetch('/api/account/wallets/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          challengeId: challenge.challengeId,
+          message: challenge.message,
+          signature,
+        }),
+      });
+      const verifyPayload = await verifyResponse.json().catch(() => undefined);
+      if (!verifyResponse.ok) {
+        throw new Error(verificationResponseMessage(verifyPayload, 'Wallet ownership verification failed.'));
+      }
+      if (!verifyPayload || typeof verifyPayload !== 'object' || (verifyPayload as Record<string, unknown>).verified !== true) {
+        throw new Error('Wallet ownership verification returned an invalid response.');
+      }
+      setOwnershipVerified(true);
+      return true;
+    } finally {
+      setVerificationBusy(false);
+    }
+  }, [authFetch, refreshOwnershipVerification]);
+
   const synchronize = useCallback(async (provider: Eip1193Provider, providedAccounts?: unknown) => {
     const generation = ++requestGeneration.current;
     const accounts = Array.isArray(providedAccounts) ? providedAccounts : await provider.request({ method: 'eth_accounts' });
@@ -169,6 +286,7 @@ export function useRobinhoodAccount() {
     if (generation !== requestGeneration.current) return;
     setAddress(nextAddress);
     setChainId(normalizedChain);
+    setOwnershipVerified(false);
     setAssets(initialAssets());
     setUpdatedAt(undefined);
     if (nextAddress) await refreshBalances(nextAddress, generation);
@@ -184,6 +302,7 @@ export function useRobinhoodAccount() {
         setChainId('');
         setAssets(initialAssets());
         setUpdatedAt(undefined);
+        setOwnershipVerified(false);
         setError('');
       }, 0);
       return () => window.clearTimeout(resetTimer);
@@ -251,6 +370,42 @@ export function useRobinhoodAccount() {
     };
   }, [address, refreshBalances]);
 
+  useEffect(() => {
+    if (!privy.authenticated || !address || !isRobinhoodChain) {
+      setOwnershipVerified(false);
+      return;
+    }
+    void refreshOwnershipVerification(address).catch(() => undefined);
+  }, [address, isRobinhoodChain, privy.authenticated, refreshOwnershipVerification]);
+
+  const verifyOwnership = useCallback(async () => {
+    if (!address) throw new Error('Connect an EVM wallet before verifying ownership.');
+    const provider = await resolveProvider();
+    if (!provider) throw new Error('No EVM wallet was detected in this browser.');
+    setError('');
+    setBusy(true);
+    try {
+      if (!isRobinhoodChain) {
+        if (connectedWallet?.type === 'ethereum') await connectedWallet.switchChain(4663);
+        else await switchToRobinhoodChain(provider);
+      }
+      const switchedProvider = await resolveProvider();
+      if (!switchedProvider) throw new Error('The connected wallet provider did not respond.');
+      const accounts = await switchedProvider.request({ method: 'eth_accounts' });
+      const activeAccount = Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : '';
+      if (!activeAccount || activeAccount.toLowerCase() !== address.toLowerCase()) {
+        throw new Error('The active wallet account changed. Reconnect the wallet and try again.');
+      }
+      await synchronize(switchedProvider, accounts);
+      return await verifyOwnershipWithProvider(switchedProvider, activeAccount);
+    } catch (requestError) {
+      setError(providerMessage(requestError));
+      throw requestError;
+    } finally {
+      setBusy(false);
+    }
+  }, [address, connectedWallet, isRobinhoodChain, resolveProvider, synchronize, verifyOwnershipWithProvider]);
+
   const connect = useCallback(async () => {
     if (!privy.ready && !privy.error) return;
     if (!privy.authenticated && !privy.error) {
@@ -290,13 +445,22 @@ export function useRobinhoodAccount() {
       if (!switchedProvider) throw new Error('The connected wallet provider did not respond.');
       providerRef.current = switchedProvider;
       await synchronize(switchedProvider);
+      const activeAccounts = await switchedProvider.request({ method: 'eth_accounts' });
+      const activeAccount = Array.isArray(activeAccounts) && typeof activeAccounts[0] === 'string' ? activeAccounts[0] : '';
+      if (activeAccount) {
+        try {
+          await verifyOwnershipWithProvider(switchedProvider, activeAccount);
+        } catch (verificationError) {
+          setError(providerMessage(verificationError));
+        }
+      }
     } catch (requestError) {
       setError(providerMessage(requestError));
       await synchronize(provider).catch(() => undefined);
     } finally {
       setBusy(false);
     }
-  }, [privy, synchronize, walletCandidate]);
+  }, [privy, synchronize, verifyOwnershipWithProvider, walletCandidate]);
 
   const switchNetwork = useCallback(async () => {
     const provider = await resolveProvider();
@@ -313,12 +477,21 @@ export function useRobinhoodAccount() {
       if (!switchedProvider) throw new Error('The connected wallet provider did not respond.');
       providerRef.current = switchedProvider;
       await synchronize(switchedProvider);
+      const accounts = await switchedProvider.request({ method: 'eth_accounts' });
+      const activeAccount = Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : '';
+      if (activeAccount) {
+        try {
+          await verifyOwnershipWithProvider(switchedProvider, activeAccount);
+        } catch (verificationError) {
+          setError(providerMessage(verificationError));
+        }
+      }
     } catch (requestError) {
       setError(providerMessage(requestError));
     } finally {
       setBusy(false);
     }
-  }, [connectedWallet, resolveProvider, synchronize]);
+  }, [connectedWallet, resolveProvider, synchronize, verifyOwnershipWithProvider]);
 
   const refresh = useCallback(async () => {
     if (address) await refreshBalances(address);
@@ -347,6 +520,7 @@ export function useRobinhoodAccount() {
     setChainId('');
     setAssets(initialAssets());
     setUpdatedAt(undefined);
+    setOwnershipVerified(false);
     try {
       await walletCandidate?.disconnect();
     } finally {
@@ -362,11 +536,15 @@ export function useRobinhoodAccount() {
     disconnect,
     error,
     isRobinhoodChain,
+    ownershipVerified,
+    verificationBusy,
     refresh,
+    refreshOwnershipVerification,
     signMessage,
+    verifyOwnership,
     switchNetwork,
     updatedAt,
-  }), [address, assets, busy, connect, disconnect, error, isRobinhoodChain, refresh, signMessage, switchNetwork, updatedAt]);
+  }), [address, assets, busy, connect, disconnect, error, isRobinhoodChain, ownershipVerified, refresh, refreshOwnershipVerification, signMessage, switchNetwork, updatedAt, verificationBusy, verifyOwnership]);
 }
 
 export type RobinhoodAccountState = ReturnType<typeof useRobinhoodAccount>;

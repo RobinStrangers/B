@@ -695,7 +695,15 @@ export default function Home() {
       await wallet.connect();
       return;
     }
+    if (!wallet.isRobinhoodChain) {
+      await wallet.switchNetwork();
+      return;
+    }
     try {
+      if (!wallet.ownershipVerified) {
+        await wallet.verifyOwnership();
+        await execution.refresh();
+      }
       await execution.activate(wallet.signMessage, accountIndex);
     } catch {
       // The execution hook keeps a sanitized error for the activation drawer.
@@ -720,6 +728,15 @@ export default function Home() {
     }
     if (!wallet.isRobinhoodChain) {
       await wallet.switchNetwork();
+      return;
+    }
+    if (!wallet.ownershipVerified) {
+      try {
+        await wallet.verifyOwnership();
+        await execution.refresh();
+      } catch {
+        return;
+      }
       return;
     }
     if (!selected.venueSymbol || !execution.readiness.canSubmit) {
@@ -844,6 +861,8 @@ export default function Home() {
       ? 'Connect wallet'
       : !wallet.isRobinhoodChain
         ? 'Switch to Robinhood Chain'
+        : !wallet.ownershipVerified
+          ? 'Verify wallet'
         : !selected.venueSymbol
           ? 'Reference-only market'
           : !execution.readiness.canSubmit

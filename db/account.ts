@@ -86,6 +86,29 @@ type WalletRow = {
   verified_at: number;
 };
 
+
+export type WalletOwnershipChallenge = {
+  id: string;
+  userId: string;
+  chainId: number;
+  address: string;
+  messageHash: string;
+  expiresAt: number;
+  consumedAt: number | null;
+  createdAt: number;
+};
+
+type WalletChallengeRow = {
+  id: string;
+  user_id: string;
+  chain_id: number;
+  address: string;
+  message_hash: string;
+  expires_at: number;
+  consumed_at: number | null;
+  created_at: number;
+};
+
 type VaultHistoryRow = {
   id: string;
   direction: 'deposit' | 'withdraw';
@@ -172,6 +195,300 @@ export async function provisionUser(identity: VerifiedIdentity) {
 
   if (!row) throw new Error('The persisted Aventa profile could not be loaded.');
   return mapUser(row);
+}
+
+export async function createWalletOwnershipChallenge(options: {
+  id: string;
+  userId: string;
+  chainId: number;
+  address: string;
+  messageHash: string;
+  expiresAt: number;
+}) {
+  const database = getDatabase();
+  const now = Math.floor(Date.now() / 1000);
+  await database.batch([
+    database.prepare(`
+      UPDATE wallet_challenges
+      SET consumed_at = ?
+      WHERE user_id = ?
+        AND chain_id = ?
+        AND address = ?
+        AND consumed_at IS NULL
+    `).bind(now, options.userId, options.chainId, options.address),
+    database.prepare(`
+      INSERT INTO wallet_challenges (
+        id, user_id, chain_id, address, message_hash, expires_at, consumed_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+    `).bind(
+      options.id,
+      options.userId,
+      options.chainId,
+      options.address,
+      options.messageHash,
+      options.expiresAt,
+      now,
+    ),
+  ]);
+}
+
+export async function getWalletOwnershipChallenge(
+  userId: string,
+  challengeId: string,
+): Promise<WalletOwnershipChallenge | null> {
+  const row = await getDatabase().prepare(`
+    SELECT id, user_id, chain_id, address, message_hash, expires_at, consumed_at, created_at
+    FROM wallet_challenges
+    WHERE id = ?
+      AND user_id = ?
+    LIMIT 1
+  `).bind(challengeId, userId).first<WalletChallengeRow>();
+
+  return row ? {
+    id: row.id,
+    userId: row.user_id,
+    chainId: row.chain_id,
+    address: row.address,
+    messageHash: row.message_hash,
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at,
+    createdAt: row.created_at,
+  } : null;
+}
+
+export async function completeWalletOwnershipVerification(options: {
+  userId: string;
+  challengeId: string;
+  chainId: number;
+  address: string;
+  checksumAddress: string;
+  proofHash: string;
+}): Promise<VerifiedWallet | null> {
+  const database = getDatabase();
+  const now = Math.floor(Date.now() / 1000);
+  const consumeMarker = Date.now();
+
+  const existingWallet = await database.prepare(`
+    SELECT
+      wallets.id AS wallet_id,
+      wallets.wallet_kind,
+      user_wallet_links.id AS link_id,
+      user_wallet_links.user_id,
+      user_wallet_links.is_primary
+    FROM wallets
+    LEFT JOIN user_wallet_links
+      ON user_wallet_links.wallet_id = wallets.id
+      AND user_wallet_links.unlinked_at IS NULL
+    WHERE wallets.chain_id = ?
+      AND wallets.address = ?
+    LIMIT 1
+  `).bind(options.chainId, options.address).first<{
+    wallet_id: string;
+    wallet_kind: VerifiedWallet['walletKind'];
+    link_id: string | null;
+    user_id: string | null;
+    is_primary: number | null;
+  }>();
+
+  if (existingWallet?.user_id && existingWallet.user_id !== options.userId) {
+    throw new WalletOwnershipConflictError();
+  }
+
+  let linkId = existingWallet?.link_id ?? null;
+  if (!linkId && existingWallet?.wallet_id) {
+    const priorLink = await database.prepare(`
+      SELECT id
+      FROM user_wallet_links
+      WHERE user_id = ?
+        AND wallet_id = ?
+      ORDER BY linked_at DESC
+      LIMIT 1
+    `).bind(options.userId, existingWallet.wallet_id).first<{ id: string }>();
+    linkId = priorLink?.id ?? null;
+  }
+
+  const [walletId, verifiedLinkId] = await Promise.all([
+    existingWallet?.wallet_id
+      ? Promise.resolve(existingWallet.wallet_id)
+      : stableIdentifier('wal', `${options.chainId}:${options.address}`),
+    linkId
+      ? Promise.resolve(linkId)
+      : stableIdentifier('pwl', `${options.userId}:${options.chainId}:${options.address}`),
+  ]);
+
+  const walletKind = existingWallet?.wallet_kind === 'embedded' ? 'embedded' : 'external';
+  const isPrimary = true;
+  const challengeExists = `
+    EXISTS (
+      SELECT 1
+      FROM wallet_challenges
+      WHERE id = ?
+        AND user_id = ?
+        AND chain_id = ?
+        AND address = ?
+        AND message_hash = ?
+        AND consumed_at IS NULL
+        AND expires_at >= ?
+    )
+  `;
+
+  await database.batch([
+    database.prepare(`
+      UPDATE user_wallet_links
+      SET is_primary = 0
+      WHERE user_id = ?
+        AND unlinked_at IS NULL
+        AND wallet_id <> ?
+        AND ${challengeExists}
+    `).bind(
+      options.userId,
+      walletId,
+      options.challengeId,
+      options.userId,
+      options.chainId,
+      options.address,
+      options.proofHash,
+      now,
+    ),
+    database.prepare(`
+      INSERT INTO wallets (id, chain_id, address, checksum_address, wallet_kind, created_at)
+      SELECT ?, ?, ?, ?, ?, ?
+      WHERE ${challengeExists}
+      ON CONFLICT(chain_id, address) DO UPDATE SET
+        checksum_address = excluded.checksum_address,
+        wallet_kind = CASE
+          WHEN wallets.wallet_kind = 'contract' THEN wallets.wallet_kind
+          WHEN wallets.wallet_kind = 'embedded' THEN wallets.wallet_kind
+          ELSE excluded.wallet_kind
+        END
+    `).bind(
+      walletId,
+      options.chainId,
+      options.address,
+      options.checksumAddress,
+      walletKind,
+      now,
+      options.challengeId,
+      options.userId,
+      options.chainId,
+      options.address,
+      options.proofHash,
+      now,
+    ),
+    database.prepare(`
+      INSERT INTO user_wallet_links (
+        id, user_id, wallet_id, verification_method, proof_hash,
+        is_primary, verified_at, linked_at, unlinked_at
+      )
+      SELECT ?, ?, ?, 'siwe_eoa', ?, ?, ?, ?, NULL
+      WHERE ${challengeExists}
+      ON CONFLICT(id) DO UPDATE SET
+        verification_method = 'siwe_eoa',
+        proof_hash = excluded.proof_hash,
+        is_primary = excluded.is_primary,
+        verified_at = excluded.verified_at,
+        unlinked_at = NULL
+      WHERE user_wallet_links.user_id = excluded.user_id
+        AND user_wallet_links.wallet_id = excluded.wallet_id
+    `).bind(
+      verifiedLinkId,
+      options.userId,
+      walletId,
+      options.proofHash,
+      isPrimary ? 1 : 0,
+      now,
+      now,
+      options.challengeId,
+      options.userId,
+      options.chainId,
+      options.address,
+      options.proofHash,
+      now,
+    ),
+    database.prepare(`
+      UPDATE wallet_challenges
+      SET consumed_at = ?
+      WHERE id = ?
+        AND user_id = ?
+        AND chain_id = ?
+        AND address = ?
+        AND message_hash = ?
+        AND consumed_at IS NULL
+        AND expires_at >= ?
+    `).bind(
+      consumeMarker,
+      options.challengeId,
+      options.userId,
+      options.chainId,
+      options.address,
+      options.proofHash,
+      now,
+    ),
+    database.prepare(`
+      INSERT INTO audit_events (id, user_id, action, metadata_json, created_at)
+      SELECT ?, ?, 'wallet.ownership.verified', ?, ?
+      WHERE EXISTS (
+        SELECT 1
+        FROM wallet_challenges
+        WHERE id = ?
+          AND user_id = ?
+          AND consumed_at = ?
+      )
+    `).bind(
+      `aud_${crypto.randomUUID().replace(/-/g, '')}`,
+      options.userId,
+      JSON.stringify({
+        chainId: options.chainId,
+        address: options.address,
+        verificationMethod: 'siwe_eoa',
+      }),
+      now,
+      options.challengeId,
+      options.userId,
+      consumeMarker,
+    ),
+  ]);
+
+  const [consumed, wallet] = await Promise.all([
+    database.prepare(`
+      SELECT id
+      FROM wallet_challenges
+      WHERE id = ?
+        AND user_id = ?
+        AND consumed_at = ?
+      LIMIT 1
+    `).bind(options.challengeId, options.userId, consumeMarker).first<{ id: string }>(),
+    database.prepare(`
+      SELECT
+        wallets.id,
+        wallets.address,
+        wallets.checksum_address,
+        wallets.chain_id,
+        wallets.wallet_kind,
+        user_wallet_links.verification_method,
+        user_wallet_links.is_primary,
+        user_wallet_links.verified_at
+      FROM user_wallet_links
+      INNER JOIN wallets ON wallets.id = user_wallet_links.wallet_id
+      WHERE user_wallet_links.user_id = ?
+        AND wallets.chain_id = ?
+        AND wallets.address = ?
+        AND user_wallet_links.unlinked_at IS NULL
+      LIMIT 1
+    `).bind(options.userId, options.chainId, options.address).first<WalletRow>(),
+  ]);
+
+  if (!consumed || !wallet || wallet.verification_method !== 'siwe_eoa') return null;
+  return {
+    id: wallet.id,
+    address: wallet.address,
+    checksumAddress: wallet.checksum_address,
+    chainId: wallet.chain_id,
+    walletKind: wallet.wallet_kind,
+    verificationMethod: wallet.verification_method,
+    isPrimary: Boolean(wallet.is_primary),
+    verifiedAt: wallet.verified_at,
+  };
 }
 
 export async function beginPrivyWalletSync(userId: string) {

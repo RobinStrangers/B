@@ -9,12 +9,12 @@ Parameters:
     AllowedPattern: ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:user/[A-Za-z0-9+=,.@_/-]+$
   ExecutionMode:
     Type: String
-    Default: off
+    Default: "off"
     AllowedValues:
-      - off
-      - paper
-      - canary
-      - limited_live
+      - "off"
+      - "paper"
+      - "canary"
+      - "limited_live"
   OpensEnabled:
     Type: String
     Default: "false"
@@ -43,12 +43,11 @@ Globals:
     Architectures: [x86_64]
     MemorySize: 1024
     Timeout: 30
-    ReservedConcurrentExecutions: 2
 
 Resources:
   ExecutionSignerKey:
     Type: AWS::KMS::Key
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       Description: Aventa per-user Lighter API key encryption
@@ -72,7 +71,7 @@ Resources:
 
   ExecutionStateTable:
     Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PROVISIONED

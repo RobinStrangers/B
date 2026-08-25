@@ -439,6 +439,15 @@ export default function AgentPage() {
       await wallet.switchNetwork();
       return;
     }
+    if (!wallet.ownershipVerified) {
+      try {
+        await wallet.verifyOwnership();
+        await execution.refresh();
+      } catch {
+        return;
+      }
+      return;
+    }
     if (!execution.readiness.canSubmit && executableIntent.action === 'order') {
       setError('Activate your user-owned Lighter trading authority in the terminal before executing this intent.');
       return;

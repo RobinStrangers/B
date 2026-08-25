@@ -267,6 +267,8 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
           {!account.address && <div className="account-connect-state" role="tabpanel" id={`account-panel-${tab}`} aria-labelledby={`account-tab-${tab}`}><span>◎</span><strong>Connect a wallet to read live balances</strong><p>Aventa reads balances directly from Robinhood Chain. No sample balance is displayed.</p><button type="button" onClick={account.connect} disabled={account.busy}>{account.busy ? 'Waiting for wallet…' : 'Connect wallet'}</button></div>}
           {account.address && !account.isRobinhoodChain && <div className="account-network-notice"><span>Wallet network differs from Robinhood Chain.</span><button type="button" onClick={account.switchNetwork} disabled={account.busy}>{account.busy ? 'Waiting…' : 'Switch network'}</button></div>}
 
+          {account.address && account.isRobinhoodChain && !account.ownershipVerified && <div className="account-network-notice"><span>Verify wallet ownership before enabling trading.</span><button type="button" onClick={() => void account.verifyOwnership()} disabled={account.busy || account.verificationBusy}>{account.busy || account.verificationBusy ? 'Waiting for signature…' : 'Verify wallet'}</button></div>}
+
           {account.address && tab === 'balances' && (
             <div className="account-balances-view" role="tabpanel" id="account-panel-balances" aria-labelledby="account-tab-balances">
               <div className="account-live-row"><span><i />{balanceFeedLabel}</span><small>{updatedLabel}</small><button type="button" onClick={() => void account.refresh()} aria-label="Refresh wallet balances">↻</button></div>
