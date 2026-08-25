@@ -31,7 +31,14 @@ export type WalletAssetBalance = {
   status: 'idle' | 'loading' | 'live' | 'error' | 'not-found';
 };
 
-type ProviderError = Error & { code?: number };
+type ProviderError = Error & {
+  code?: number;
+  data?: unknown;
+  cause?: unknown;
+  error?: unknown;
+  details?: string;
+  shortMessage?: string;
+};
 
 export const ROBINHOOD_CHAIN_ID = '0x1237';
 const ROBINHOOD_RPC_FALLBACK = 'https://rpc.mainnet.chain.robinhood.com';
@@ -73,7 +80,52 @@ function isAddress(value?: string): value is string {
 function providerMessage(error: unknown) {
   const providerError = error as ProviderError;
   if (providerError?.code === 4001) return 'The wallet request was declined.';
-  return providerError?.message || 'The wallet request could not be completed.';
+
+  const candidates: unknown[] = [
+    providerError?.shortMessage,
+    providerError?.details,
+    providerError?.message,
+    providerError?.data,
+    providerError?.cause,
+    providerError?.error,
+  ];
+  const visited = new Set<unknown>();
+
+  const extract = (value: unknown): string | undefined => {
+    if (!value || visited.has(value)) return undefined;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed || trimmed.toLowerCase() === 'internal error') return undefined;
+      return trimmed;
+    }
+    if (typeof value !== 'object') return undefined;
+    visited.add(value);
+    const row = value as Record<string, unknown>;
+    for (const key of ['reason', 'message', 'shortMessage', 'details', 'data', 'cause', 'error']) {
+      const nested = extract(row[key]);
+      if (nested) return nested;
+    }
+    return undefined;
+  };
+
+  for (const candidate of candidates) {
+    const message = extract(candidate);
+    if (message) return message;
+  }
+  return providerError?.code ? `Wallet RPC error (${providerError.code}).` : 'The wallet request could not be completed.';
+}
+
+function walletClientType(wallet: unknown) {
+  if (!wallet || typeof wallet !== 'object') return '';
+  const value = (wallet as Record<string, unknown>).walletClientType;
+  return typeof value === 'string' ? value.toLowerCase() : '';
+}
+
+function isUnsupportedRobinhoodSmartWallet(wallet: unknown) {
+  const clientType = walletClientType(wallet);
+  return clientType === 'base_account'
+    || clientType === 'coinbase_smart_wallet'
+    || clientType === 'privy_smart_account';
 }
 
 type TransactionReceipt = { status?: string; transactionHash?: string };
@@ -243,11 +295,17 @@ export function useRobinhoodAccount() {
   const [verificationBusy, setVerificationBusy] = useState(false);
   const requestGeneration = useRef(0);
   const providerRef = useRef<Eip1193Provider | undefined>(undefined);
-  const walletCandidate = useMemo(
-    () => wallets.find((wallet) => wallet.type === 'ethereum' && wallet.linked)
-      ?? wallets.find((wallet) => wallet.type === 'ethereum'),
-    [wallets],
-  );
+  const walletCandidate = useMemo(() => {
+    const evmWallets = wallets.filter((wallet) => wallet.type === 'ethereum');
+    const supportedExternal = evmWallets.filter((wallet) => (
+      walletClientType(wallet) !== 'privy' && !isUnsupportedRobinhoodSmartWallet(wallet)
+    ));
+    return supportedExternal.find((wallet) => wallet.linked)
+      ?? supportedExternal[0]
+      ?? evmWallets.find((wallet) => wallet.linked && !isUnsupportedRobinhoodSmartWallet(wallet))
+      ?? evmWallets.find((wallet) => !isUnsupportedRobinhoodSmartWallet(wallet))
+      ?? evmWallets[0];
+  }, [wallets]);
   const connectedWallet = privy.authenticated && !walletDisabled ? walletCandidate : undefined;
 
   const isRobinhoodChain = chainId.toLowerCase() === ROBINHOOD_CHAIN_ID;
@@ -632,14 +690,12 @@ export function useRobinhoodAccount() {
     try {
       let provider = await resolveProvider();
       if (!provider) throw new Error('No EVM wallet was detected in this browser.');
-
-      const currentChain = await provider.request({ method: 'eth_chainId' });
-      if (typeof currentChain !== 'string' || currentChain.toLowerCase() !== ROBINHOOD_CHAIN_ID) {
-        if (connectedWallet?.type === 'ethereum') await connectedWallet.switchChain(4663);
-        else await switchToRobinhoodChain(provider);
-        provider = await resolveProvider();
-        if (!provider) throw new Error('The connected wallet provider did not respond after switching network.');
+      if (isUnsupportedRobinhoodSmartWallet(connectedWallet)) {
+        throw new Error('This smart wallet does not support Robinhood Chain. Connect an EOA wallet such as Bitget, MetaMask, or Rabby.');
       }
+
+      provider = await ensureRobinhoodChain(provider, connectedWallet);
+      providerRef.current = provider;
 
       const accounts = await provider.request({ method: 'eth_accounts' });
       const activeAccount = Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : '';
@@ -680,10 +736,21 @@ export function useRobinhoodAccount() {
           functionName: 'approve',
           args: [ROBINHOOD_LIGHTER_PROXY, rawAmount],
         });
-        const approvalHash = await provider.request({
-          method: 'eth_sendTransaction',
-          params: [{ from: activeAccount, to: ROBINHOOD_USDG_ADDRESS, data: approvalData, value: '0x0' }],
-        });
+        const approvalRequest = { from: activeAccount, to: ROBINHOOD_USDG_ADDRESS, data: approvalData, value: '0x0' };
+        try {
+          await provider.request({ method: 'eth_estimateGas', params: [approvalRequest] });
+        } catch (approvalSimulationError) {
+          throw new Error(`USDG approval simulation failed: ${providerMessage(approvalSimulationError)}`);
+        }
+        let approvalHash: unknown;
+        try {
+          approvalHash = await provider.request({
+            method: 'eth_sendTransaction',
+            params: [approvalRequest],
+          });
+        } catch (approvalError) {
+          throw new Error(`USDG approval failed: ${providerMessage(approvalError)}`);
+        }
         if (typeof approvalHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(approvalHash)) {
           throw new Error('The wallet did not return a valid USDG approval transaction hash.');
         }
@@ -700,10 +767,21 @@ export function useRobinhoodAccount() {
           rawAmount,
         ],
       });
-      const depositHash = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [{ from: activeAccount, to: ROBINHOOD_LIGHTER_PROXY, data: depositData, value: '0x0' }],
-      });
+      const depositRequest = { from: activeAccount, to: ROBINHOOD_LIGHTER_PROXY, data: depositData, value: '0x0' };
+      try {
+        await provider.request({ method: 'eth_estimateGas', params: [depositRequest] });
+      } catch (depositSimulationError) {
+        throw new Error(`Lighter deposit simulation failed: ${providerMessage(depositSimulationError)}`);
+      }
+      let depositHash: unknown;
+      try {
+        depositHash = await provider.request({
+          method: 'eth_sendTransaction',
+          params: [depositRequest],
+        });
+      } catch (depositSendError) {
+        throw new Error(`Lighter deposit failed: ${providerMessage(depositSendError)}`);
+      }
       if (typeof depositHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(depositHash)) {
         throw new Error('The wallet did not return a valid Lighter deposit transaction hash.');
       }

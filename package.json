@@ -16,6 +16,7 @@
   "dependencies": {
     "@privy-io/node": "0.30.0",
     "@privy-io/react-auth": "3.37.4",
+    "@stripe/stripe-js": "9.14.0",
     "@web3icons/react": "4.1.20",
     "drizzle-orm": "0.45.2",
     "next": "16.2.12",

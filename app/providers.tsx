@@ -109,14 +109,15 @@ export default function Providers({
       config={{
         loginMethods: [...PRIVY_LOGIN_METHODS],
         appearance: {
-          theme: '#2B3740',
-          accentColor: '#FC6224',
-          logo: '/aventa-mark.png',
-          landingHeader: 'Enter Aventa',
-          loginMessage: 'Choose how you want to access your trading profile.',
-          showWalletLoginFirst: false,
-          walletChainType: 'ethereum-only',
-        },
+  theme: '#2B3740',
+  accentColor: '#FC6224',
+  logo: '/aventa-mark.png',
+  landingHeader: 'Enter Aventa',
+  loginMessage: 'Choose how you want to access your trading profile.',
+  showWalletLoginFirst: false,
+  walletChainType: 'ethereum-only',
+  walletList: ['detected_ethereum_wallets', 'wallet_connect_qr'],
+},
         embeddedWallets: {
           ethereum: { createOnLogin: 'users-without-wallets' },
         },
