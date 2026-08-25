@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Aventa fail-closed Robinhood Lighter execution signer
+
+Parameters:
+  AllowedInvokerArn:
+    Type: String
+    Description: Exact IAM user ARN used by the Aventa Sites server-to-server caller.
+    AllowedPattern: ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:user/[A-Za-z0-9+=,.@_/-]+$
+  ExecutionMode:
+    Type: String
+    Default: off
+    AllowedValues:
+      - off
+      - paper
+      - canary
+      - limited_live
+  OpensEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  ExitOnlyEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  CanaryUserHashes:
+    Type: String
+    Default: ""
+    NoEcho: true
+  MaximumEnrolledUsers:
+    Type: Number
+    Default: 450
+    MinValue: 1
+    MaxValue: 100000
+  MaximumNotionalUsd:
+    Type: Number
+    Default: 25000
+    MinValue: 100
+    MaxValue: 10000000
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    MemorySize: 1024
+    Timeout: 30
+    ReservedConcurrentExecutions: 2
+
+Resources:
+  ExecutionSignerKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Aventa per-user Lighter API key encryption
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+
+  ExecutionSignerKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/aventa-execution-signer
+      TargetKeyId: !Ref ExecutionSignerKey
+
+  ExecutionStateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 10
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: ActivityIndex
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 10
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt ExecutionSignerKey.Arn
+
+  ExecutionFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: python3.12
+    Properties:
+      CodeUri: src/
+      Handler: handler.lambda_handler
+      Description: Typed, IAM-only Aventa execution boundary
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ExecutionStateTable
+          KMS_KEY_ID: !GetAtt ExecutionSignerKey.Arn
+          EXECUTION_MODE: !Ref ExecutionMode
+          OPENS_ENABLED: !Ref OpensEnabled
+          EXIT_ONLY_ENABLED: !Ref ExitOnlyEnabled
+          ALLOWED_INVOKER_ARN: !Ref AllowedInvokerArn
+          CANARY_USER_HASHES: !Ref CanaryUserHashes
+          MAX_ENROLLED_USERS: !Ref MaximumEnrolledUsers
+          MAX_NOTIONAL_USD: !Ref MaximumNotionalUsd
+          CHALLENGE_TTL_SECONDS: "600"
+          NONCE_LEASE_SECONDS: "30"
+          NONCE_QUARANTINE_SECONDS: "86400"
+          REQUEST_RETENTION_SECONDS: "31536000"
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+        InvokeMode: BUFFERED
+      Policies:
+        - Statement:
+            - Sid: ExecutionTableOnly
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:TransactWriteItems
+              Resource:
+                - !GetAtt ExecutionStateTable.Arn
+                - !Sub ${ExecutionStateTable.Arn}/index/*
+            - Sid: UserSignerKeyCryptography
+              Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:Encrypt
+                - kms:DescribeKey
+              Resource: !GetAtt ExecutionSignerKey.Arn
+
+  ExecutionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ExecutionFunction}
+      RetentionInDays: 14
+
+  FunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref ExecutionFunction
+      FunctionUrlAuthType: AWS_IAM
+      Principal: !Ref AllowedInvokerArn
+
+  FunctionInvokeViaUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ExecutionFunction
+      InvokedViaFunctionUrl: true
+      Principal: !Ref AllowedInvokerArn
+
+Outputs:
+  ExecutionFunctionUrl:
+    Description: IAM-authenticated execution endpoint; do not call it from a browser.
+    Value: !GetAtt ExecutionFunctionUrl.FunctionUrl
+  ExecutionTableName:
+    Value: !Ref ExecutionStateTable
+  ExecutionFunctionArn:
+    Value: !GetAtt ExecutionFunction.Arn
+  ExecutionSignerKeyArn:
+    Value: !GetAtt ExecutionSignerKey.Arn

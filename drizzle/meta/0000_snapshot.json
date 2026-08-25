@@ -1,0 +1,2084 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "1605823f-539a-4fec-849e-e701b6cad089",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "app_users": {
+      "name": "app_users",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'active'"
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "app_users_status_check": {
+          "name": "app_users_status_check",
+          "value": "\"app_users\".\"status\" in ('active', 'suspended', 'deleted')"
+        }
+      }
+    },
+    "audit_events": {
+      "name": "audit_events",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "metadata_json": {
+          "name": "metadata_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        }
+      },
+      "indexes": {
+        "idx_audit_events_user_created": {
+          "name": "idx_audit_events_user_created",
+          "columns": [
+            "user_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "audit_events_user_id_app_users_id_fk": {
+          "name": "audit_events_user_id_app_users_id_fk",
+          "tableFrom": "audit_events",
+          "tableTo": "app_users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "audit_events_metadata_json_check": {
+          "name": "audit_events_metadata_json_check",
+          "value": "json_valid(\"audit_events\".\"metadata_json\")"
+        }
+      }
+    },
+    "auth_identities": {
+      "name": "auth_identities",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "issuer": {
+          "name": "issuer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        }
+      },
+      "indexes": {
+        "uq_auth_identities_issuer_subject": {
+          "name": "uq_auth_identities_issuer_subject",
+          "columns": [
+            "issuer",
+            "subject"
+          ],
+          "isUnique": true
+        },
+        "idx_auth_identities_user": {
+          "name": "idx_auth_identities_user",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "auth_identities_user_id_app_users_id_fk": {
+          "name": "auth_identities_user_id_app_users_id_fk",
+          "tableFrom": "auth_identities",
+          "tableTo": "app_users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "chain_events": {
+      "name": "chain_events",
+      "columns": {
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "contract_address": {
+          "name": "contract_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "transaction_hash": {
+          "name": "transaction_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "log_index": {
+          "name": "log_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "block_number": {
+          "name": "block_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "block_hash": {
+          "name": "block_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "block_timestamp": {
+          "name": "block_timestamp",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "topic0": {
+          "name": "topic0",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event_name": {
+          "name": "event_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "decoder_version": {
+          "name": "decoder_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "topics_json": {
+          "name": "topics_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'[]'"
+        },
+        "data_hex": {
+          "name": "data_hex",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'0x'"
+        },
+        "decoded_json": {
+          "name": "decoded_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'{}'"
+        },
+        "is_canonical": {
+          "name": "is_canonical",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "is_finalized": {
+          "name": "is_finalized",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        },
+        "finalized_at": {
+          "name": "finalized_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "orphaned_at": {
+          "name": "orphaned_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "uq_chain_events_transaction_log": {
+          "name": "uq_chain_events_transaction_log",
+          "columns": [
+            "chain_id",
+            "transaction_hash",
+            "log_index"
+          ],
+          "isUnique": true
+        },
+        "idx_chain_events_contract_scan": {
+          "name": "idx_chain_events_contract_scan",
+          "columns": [
+            "chain_id",
+            "contract_address",
+            "block_number",
+            "log_index"
+          ],
+          "isUnique": false
+        },
+        "idx_chain_events_transaction": {
+          "name": "idx_chain_events_transaction",
+          "columns": [
+            "chain_id",
+            "transaction_hash"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "chain_events_chain_check": {
+          "name": "chain_events_chain_check",
+          "value": "\"chain_events\".\"chain_id\" > 0"
+        },
+        "chain_events_contract_check": {
+          "name": "chain_events_contract_check",
+          "value": "\n  length(\"chain_events\".\"contract_address\") = 42\n  and substr(\"chain_events\".\"contract_address\", 1, 2) = '0x'\n  and \"chain_events\".\"contract_address\" = lower(\"chain_events\".\"contract_address\")\n  and substr(\"chain_events\".\"contract_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "chain_events_transaction_check": {
+          "name": "chain_events_transaction_check",
+          "value": "\n  length(\"chain_events\".\"transaction_hash\") = 66\n  and substr(\"chain_events\".\"transaction_hash\", 1, 2) = '0x'\n  and \"chain_events\".\"transaction_hash\" = lower(\"chain_events\".\"transaction_hash\")\n  and substr(\"chain_events\".\"transaction_hash\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "chain_events_block_hash_check": {
+          "name": "chain_events_block_hash_check",
+          "value": "\n  length(\"chain_events\".\"block_hash\") = 66\n  and substr(\"chain_events\".\"block_hash\", 1, 2) = '0x'\n  and \"chain_events\".\"block_hash\" = lower(\"chain_events\".\"block_hash\")\n  and substr(\"chain_events\".\"block_hash\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "chain_events_topic0_check": {
+          "name": "chain_events_topic0_check",
+          "value": "\n  length(\"chain_events\".\"topic0\") = 66\n  and substr(\"chain_events\".\"topic0\", 1, 2) = '0x'\n  and \"chain_events\".\"topic0\" = lower(\"chain_events\".\"topic0\")\n  and substr(\"chain_events\".\"topic0\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "chain_events_position_check": {
+          "name": "chain_events_position_check",
+          "value": "\"chain_events\".\"log_index\" >= 0 and \"chain_events\".\"block_number\" >= 0 and \"chain_events\".\"block_timestamp\" >= 0"
+        },
+        "chain_events_decoder_check": {
+          "name": "chain_events_decoder_check",
+          "value": "\"chain_events\".\"decoder_version\" > 0"
+        },
+        "chain_events_topics_json_check": {
+          "name": "chain_events_topics_json_check",
+          "value": "json_valid(\"chain_events\".\"topics_json\")"
+        },
+        "chain_events_data_hex_check": {
+          "name": "chain_events_data_hex_check",
+          "value": "length(\"chain_events\".\"data_hex\") >= 2 and substr(\"chain_events\".\"data_hex\", 1, 2) = '0x' and \"chain_events\".\"data_hex\" = lower(\"chain_events\".\"data_hex\") and substr(\"chain_events\".\"data_hex\", 3) not glob '*[^0-9a-f]*' and (length(\"chain_events\".\"data_hex\") - 2) % 2 = 0"
+        },
+        "chain_events_decoded_json_check": {
+          "name": "chain_events_decoded_json_check",
+          "value": "json_valid(\"chain_events\".\"decoded_json\")"
+        },
+        "chain_events_canonical_check": {
+          "name": "chain_events_canonical_check",
+          "value": "\"chain_events\".\"is_canonical\" in (0, 1)"
+        },
+        "chain_events_finalized_check": {
+          "name": "chain_events_finalized_check",
+          "value": "\"chain_events\".\"is_finalized\" in (0, 1)"
+        },
+        "chain_events_finality_check": {
+          "name": "chain_events_finality_check",
+          "value": "\"chain_events\".\"is_finalized\" = 0 or \"chain_events\".\"is_canonical\" = 1"
+        }
+      }
+    },
+    "funding_payment_projections": {
+      "name": "funding_payment_projections",
+      "columns": {
+        "payment_key": {
+          "name": "payment_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "venue_address": {
+          "name": "venue_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "account_address": {
+          "name": "account_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "market_id": {
+          "name": "market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "rate_raw": {
+          "name": "rate_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payment_raw": {
+          "name": "payment_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "collateral_decimals": {
+          "name": "collateral_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "block_number": {
+          "name": "block_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "block_timestamp": {
+          "name": "block_timestamp",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_event_id": {
+          "name": "source_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "funding_payment_projections_source_event_id_unique": {
+          "name": "funding_payment_projections_source_event_id_unique",
+          "columns": [
+            "source_event_id"
+          ],
+          "isUnique": true
+        },
+        "idx_funding_payments_account_block": {
+          "name": "idx_funding_payments_account_block",
+          "columns": [
+            "chain_id",
+            "account_address",
+            "block_number"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "funding_payment_projections_source_event_id_chain_events_event_id_fk": {
+          "name": "funding_payment_projections_source_event_id_chain_events_event_id_fk",
+          "tableFrom": "funding_payment_projections",
+          "tableTo": "chain_events",
+          "columnsFrom": [
+            "source_event_id"
+          ],
+          "columnsTo": [
+            "event_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "funding_payments_chain_check": {
+          "name": "funding_payments_chain_check",
+          "value": "\"funding_payment_projections\".\"chain_id\" > 0"
+        },
+        "funding_payments_venue_check": {
+          "name": "funding_payments_venue_check",
+          "value": "\n  length(\"funding_payment_projections\".\"venue_address\") = 42\n  and substr(\"funding_payment_projections\".\"venue_address\", 1, 2) = '0x'\n  and \"funding_payment_projections\".\"venue_address\" = lower(\"funding_payment_projections\".\"venue_address\")\n  and substr(\"funding_payment_projections\".\"venue_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "funding_payments_account_check": {
+          "name": "funding_payments_account_check",
+          "value": "\n  length(\"funding_payment_projections\".\"account_address\") = 42\n  and substr(\"funding_payment_projections\".\"account_address\", 1, 2) = '0x'\n  and \"funding_payment_projections\".\"account_address\" = lower(\"funding_payment_projections\".\"account_address\")\n  and substr(\"funding_payment_projections\".\"account_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "funding_payments_rate_check": {
+          "name": "funding_payments_rate_check",
+          "value": "\n  \"funding_payment_projections\".\"rate_raw\" = '0'\n  or (\n    \"funding_payment_projections\".\"rate_raw\" not glob '*[^0-9]*'\n    and substr(\"funding_payment_projections\".\"rate_raw\", 1, 1) between '1' and '9'\n  )\n  or (\n    substr(\"funding_payment_projections\".\"rate_raw\", 1, 1) = '-'\n    and length(\"funding_payment_projections\".\"rate_raw\") > 1\n    and substr(\"funding_payment_projections\".\"rate_raw\", 2) not glob '*[^0-9]*'\n    and substr(\"funding_payment_projections\".\"rate_raw\", 2, 1) between '1' and '9'\n  )\n"
+        },
+        "funding_payments_payment_check": {
+          "name": "funding_payments_payment_check",
+          "value": "\n  \"funding_payment_projections\".\"payment_raw\" = '0'\n  or (\n    \"funding_payment_projections\".\"payment_raw\" not glob '*[^0-9]*'\n    and substr(\"funding_payment_projections\".\"payment_raw\", 1, 1) between '1' and '9'\n  )\n  or (\n    substr(\"funding_payment_projections\".\"payment_raw\", 1, 1) = '-'\n    and length(\"funding_payment_projections\".\"payment_raw\") > 1\n    and substr(\"funding_payment_projections\".\"payment_raw\", 2) not glob '*[^0-9]*'\n    and substr(\"funding_payment_projections\".\"payment_raw\", 2, 1) between '1' and '9'\n  )\n"
+        },
+        "funding_payments_decimals_check": {
+          "name": "funding_payments_decimals_check",
+          "value": "\"funding_payment_projections\".\"collateral_decimals\" between 0 and 36"
+        },
+        "funding_payments_block_check": {
+          "name": "funding_payments_block_check",
+          "value": "\"funding_payment_projections\".\"block_number\" >= 0 and \"funding_payment_projections\".\"block_timestamp\" >= 0"
+        }
+      }
+    },
+    "indexer_checkpoints": {
+      "name": "indexer_checkpoints",
+      "columns": {
+        "stream_key": {
+          "name": "stream_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "contract_address": {
+          "name": "contract_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_scanned_block": {
+          "name": "last_scanned_block",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": -1
+        },
+        "last_scanned_block_hash": {
+          "name": "last_scanned_block_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_finalized_block": {
+          "name": "last_finalized_block",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": -1
+        },
+        "confirmations_required": {
+          "name": "confirmations_required",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'idle'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "indexer_checkpoints_chain_check": {
+          "name": "indexer_checkpoints_chain_check",
+          "value": "\"indexer_checkpoints\".\"chain_id\" > 0"
+        },
+        "indexer_checkpoints_contract_check": {
+          "name": "indexer_checkpoints_contract_check",
+          "value": "\n  length(\"indexer_checkpoints\".\"contract_address\") = 42\n  and substr(\"indexer_checkpoints\".\"contract_address\", 1, 2) = '0x'\n  and \"indexer_checkpoints\".\"contract_address\" = lower(\"indexer_checkpoints\".\"contract_address\")\n  and substr(\"indexer_checkpoints\".\"contract_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "indexer_checkpoints_blocks_check": {
+          "name": "indexer_checkpoints_blocks_check",
+          "value": "\"indexer_checkpoints\".\"last_scanned_block\" >= -1 and \"indexer_checkpoints\".\"last_finalized_block\" >= -1 and \"indexer_checkpoints\".\"last_finalized_block\" <= \"indexer_checkpoints\".\"last_scanned_block\""
+        },
+        "indexer_checkpoints_confirmations_check": {
+          "name": "indexer_checkpoints_confirmations_check",
+          "value": "\"indexer_checkpoints\".\"confirmations_required\" >= 0"
+        },
+        "indexer_checkpoints_state_check": {
+          "name": "indexer_checkpoints_state_check",
+          "value": "\"indexer_checkpoints\".\"state\" in ('idle', 'syncing', 'rebuilding', 'healthy', 'error')"
+        }
+      }
+    },
+    "order_projections": {
+      "name": "order_projections",
+      "columns": {
+        "projection_key": {
+          "name": "projection_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "venue_address": {
+          "name": "venue_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "onchain_order_id": {
+          "name": "onchain_order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "account_address": {
+          "name": "account_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "market_id": {
+          "name": "market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "side": {
+          "name": "side",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "order_type": {
+          "name": "order_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "size_raw": {
+          "name": "size_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "filled_size_raw": {
+          "name": "filled_size_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "limit_price_raw": {
+          "name": "limit_price_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "trigger_price_raw": {
+          "name": "trigger_price_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "average_fill_price_raw": {
+          "name": "average_fill_price_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "size_decimals": {
+          "name": "size_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "price_decimals": {
+          "name": "price_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reduce_only": {
+          "name": "reduce_only",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "created_block_number": {
+          "name": "created_block_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_block_number": {
+          "name": "updated_block_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_event_id": {
+          "name": "created_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_event_id": {
+          "name": "updated_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "uq_order_projections_venue_order": {
+          "name": "uq_order_projections_venue_order",
+          "columns": [
+            "chain_id",
+            "venue_address",
+            "onchain_order_id"
+          ],
+          "isUnique": true
+        },
+        "idx_order_projections_account_status": {
+          "name": "idx_order_projections_account_status",
+          "columns": [
+            "chain_id",
+            "account_address",
+            "status",
+            "updated_block_number"
+          ],
+          "isUnique": false
+        },
+        "idx_order_projections_market_status": {
+          "name": "idx_order_projections_market_status",
+          "columns": [
+            "chain_id",
+            "venue_address",
+            "market_id",
+            "status"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "order_projections_created_event_id_chain_events_event_id_fk": {
+          "name": "order_projections_created_event_id_chain_events_event_id_fk",
+          "tableFrom": "order_projections",
+          "tableTo": "chain_events",
+          "columnsFrom": [
+            "created_event_id"
+          ],
+          "columnsTo": [
+            "event_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_projections_updated_event_id_chain_events_event_id_fk": {
+          "name": "order_projections_updated_event_id_chain_events_event_id_fk",
+          "tableFrom": "order_projections",
+          "tableTo": "chain_events",
+          "columnsFrom": [
+            "updated_event_id"
+          ],
+          "columnsTo": [
+            "event_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "order_projections_chain_check": {
+          "name": "order_projections_chain_check",
+          "value": "\"order_projections\".\"chain_id\" > 0"
+        },
+        "order_projections_venue_check": {
+          "name": "order_projections_venue_check",
+          "value": "\n  length(\"order_projections\".\"venue_address\") = 42\n  and substr(\"order_projections\".\"venue_address\", 1, 2) = '0x'\n  and \"order_projections\".\"venue_address\" = lower(\"order_projections\".\"venue_address\")\n  and substr(\"order_projections\".\"venue_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "order_projections_account_check": {
+          "name": "order_projections_account_check",
+          "value": "\n  length(\"order_projections\".\"account_address\") = 42\n  and substr(\"order_projections\".\"account_address\", 1, 2) = '0x'\n  and \"order_projections\".\"account_address\" = lower(\"order_projections\".\"account_address\")\n  and substr(\"order_projections\".\"account_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "order_projections_side_check": {
+          "name": "order_projections_side_check",
+          "value": "\"order_projections\".\"side\" in ('long', 'short')"
+        },
+        "order_projections_type_check": {
+          "name": "order_projections_type_check",
+          "value": "\"order_projections\".\"order_type\" in ('market', 'limit', 'stop', 'stop_limit')"
+        },
+        "order_projections_status_check": {
+          "name": "order_projections_status_check",
+          "value": "\"order_projections\".\"status\" in ('open', 'partially_filled', 'filled', 'cancelled', 'expired', 'rejected')"
+        },
+        "order_projections_size_check": {
+          "name": "order_projections_size_check",
+          "value": "\n  length(\"order_projections\".\"size_raw\") > 0\n  and \"order_projections\".\"size_raw\" not glob '*[^0-9]*'\n  and (\"order_projections\".\"size_raw\" = '0' or substr(\"order_projections\".\"size_raw\", 1, 1) between '1' and '9')\n"
+        },
+        "order_projections_filled_size_check": {
+          "name": "order_projections_filled_size_check",
+          "value": "\n  length(\"order_projections\".\"filled_size_raw\") > 0\n  and \"order_projections\".\"filled_size_raw\" not glob '*[^0-9]*'\n  and (\"order_projections\".\"filled_size_raw\" = '0' or substr(\"order_projections\".\"filled_size_raw\", 1, 1) between '1' and '9')\n"
+        },
+        "order_projections_limit_price_check": {
+          "name": "order_projections_limit_price_check",
+          "value": "\"order_projections\".\"limit_price_raw\" is null or (\n  length(\"order_projections\".\"limit_price_raw\") > 0\n  and \"order_projections\".\"limit_price_raw\" not glob '*[^0-9]*'\n  and (\"order_projections\".\"limit_price_raw\" = '0' or substr(\"order_projections\".\"limit_price_raw\", 1, 1) between '1' and '9')\n)"
+        },
+        "order_projections_trigger_price_check": {
+          "name": "order_projections_trigger_price_check",
+          "value": "\"order_projections\".\"trigger_price_raw\" is null or (\n  length(\"order_projections\".\"trigger_price_raw\") > 0\n  and \"order_projections\".\"trigger_price_raw\" not glob '*[^0-9]*'\n  and (\"order_projections\".\"trigger_price_raw\" = '0' or substr(\"order_projections\".\"trigger_price_raw\", 1, 1) between '1' and '9')\n)"
+        },
+        "order_projections_average_price_check": {
+          "name": "order_projections_average_price_check",
+          "value": "\"order_projections\".\"average_fill_price_raw\" is null or (\n  length(\"order_projections\".\"average_fill_price_raw\") > 0\n  and \"order_projections\".\"average_fill_price_raw\" not glob '*[^0-9]*'\n  and (\"order_projections\".\"average_fill_price_raw\" = '0' or substr(\"order_projections\".\"average_fill_price_raw\", 1, 1) between '1' and '9')\n)"
+        },
+        "order_projections_decimals_check": {
+          "name": "order_projections_decimals_check",
+          "value": "\"order_projections\".\"size_decimals\" between 0 and 36 and \"order_projections\".\"price_decimals\" between 0 and 36"
+        },
+        "order_projections_reduce_only_check": {
+          "name": "order_projections_reduce_only_check",
+          "value": "\"order_projections\".\"reduce_only\" in (0, 1)"
+        },
+        "order_projections_blocks_check": {
+          "name": "order_projections_blocks_check",
+          "value": "\"order_projections\".\"created_block_number\" >= 0 and \"order_projections\".\"updated_block_number\" >= \"order_projections\".\"created_block_number\""
+        }
+      }
+    },
+    "position_projections": {
+      "name": "position_projections",
+      "columns": {
+        "projection_key": {
+          "name": "projection_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "venue_address": {
+          "name": "venue_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "account_address": {
+          "name": "account_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "market_id": {
+          "name": "market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "side": {
+          "name": "side",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "size_raw": {
+          "name": "size_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "collateral_raw": {
+          "name": "collateral_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entry_price_raw": {
+          "name": "entry_price_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "realized_pnl_raw": {
+          "name": "realized_pnl_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "funding_accrued_raw": {
+          "name": "funding_accrued_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "size_decimals": {
+          "name": "size_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "price_decimals": {
+          "name": "price_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "collateral_decimals": {
+          "name": "collateral_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_block_number": {
+          "name": "updated_block_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_event_id": {
+          "name": "updated_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "uq_position_projections_account_market": {
+          "name": "uq_position_projections_account_market",
+          "columns": [
+            "chain_id",
+            "venue_address",
+            "account_address",
+            "market_id"
+          ],
+          "isUnique": true
+        },
+        "idx_position_projections_account": {
+          "name": "idx_position_projections_account",
+          "columns": [
+            "chain_id",
+            "account_address"
+          ],
+          "isUnique": false
+        },
+        "idx_position_projections_market": {
+          "name": "idx_position_projections_market",
+          "columns": [
+            "chain_id",
+            "venue_address",
+            "market_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "position_projections_updated_event_id_chain_events_event_id_fk": {
+          "name": "position_projections_updated_event_id_chain_events_event_id_fk",
+          "tableFrom": "position_projections",
+          "tableTo": "chain_events",
+          "columnsFrom": [
+            "updated_event_id"
+          ],
+          "columnsTo": [
+            "event_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "position_projections_chain_check": {
+          "name": "position_projections_chain_check",
+          "value": "\"position_projections\".\"chain_id\" > 0"
+        },
+        "position_projections_venue_check": {
+          "name": "position_projections_venue_check",
+          "value": "\n  length(\"position_projections\".\"venue_address\") = 42\n  and substr(\"position_projections\".\"venue_address\", 1, 2) = '0x'\n  and \"position_projections\".\"venue_address\" = lower(\"position_projections\".\"venue_address\")\n  and substr(\"position_projections\".\"venue_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "position_projections_account_check": {
+          "name": "position_projections_account_check",
+          "value": "\n  length(\"position_projections\".\"account_address\") = 42\n  and substr(\"position_projections\".\"account_address\", 1, 2) = '0x'\n  and \"position_projections\".\"account_address\" = lower(\"position_projections\".\"account_address\")\n  and substr(\"position_projections\".\"account_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "position_projections_side_check": {
+          "name": "position_projections_side_check",
+          "value": "\"position_projections\".\"side\" in ('long', 'short', 'flat')"
+        },
+        "position_projections_size_check": {
+          "name": "position_projections_size_check",
+          "value": "\n  length(\"position_projections\".\"size_raw\") > 0\n  and \"position_projections\".\"size_raw\" not glob '*[^0-9]*'\n  and (\"position_projections\".\"size_raw\" = '0' or substr(\"position_projections\".\"size_raw\", 1, 1) between '1' and '9')\n"
+        },
+        "position_projections_open_size_check": {
+          "name": "position_projections_open_size_check",
+          "value": "(\"position_projections\".\"side\" = 'flat' and \"position_projections\".\"size_raw\" = '0') or (\"position_projections\".\"side\" in ('long', 'short') and \"position_projections\".\"size_raw\" <> '0')"
+        },
+        "position_projections_collateral_check": {
+          "name": "position_projections_collateral_check",
+          "value": "\n  length(\"position_projections\".\"collateral_raw\") > 0\n  and \"position_projections\".\"collateral_raw\" not glob '*[^0-9]*'\n  and (\"position_projections\".\"collateral_raw\" = '0' or substr(\"position_projections\".\"collateral_raw\", 1, 1) between '1' and '9')\n"
+        },
+        "position_projections_entry_price_check": {
+          "name": "position_projections_entry_price_check",
+          "value": "\"position_projections\".\"entry_price_raw\" is null or (\n  length(\"position_projections\".\"entry_price_raw\") > 0\n  and \"position_projections\".\"entry_price_raw\" not glob '*[^0-9]*'\n  and (\"position_projections\".\"entry_price_raw\" = '0' or substr(\"position_projections\".\"entry_price_raw\", 1, 1) between '1' and '9')\n)"
+        },
+        "position_projections_realized_pnl_check": {
+          "name": "position_projections_realized_pnl_check",
+          "value": "\n  \"position_projections\".\"realized_pnl_raw\" = '0'\n  or (\n    \"position_projections\".\"realized_pnl_raw\" not glob '*[^0-9]*'\n    and substr(\"position_projections\".\"realized_pnl_raw\", 1, 1) between '1' and '9'\n  )\n  or (\n    substr(\"position_projections\".\"realized_pnl_raw\", 1, 1) = '-'\n    and length(\"position_projections\".\"realized_pnl_raw\") > 1\n    and substr(\"position_projections\".\"realized_pnl_raw\", 2) not glob '*[^0-9]*'\n    and substr(\"position_projections\".\"realized_pnl_raw\", 2, 1) between '1' and '9'\n  )\n"
+        },
+        "position_projections_funding_check": {
+          "name": "position_projections_funding_check",
+          "value": "\n  \"position_projections\".\"funding_accrued_raw\" = '0'\n  or (\n    \"position_projections\".\"funding_accrued_raw\" not glob '*[^0-9]*'\n    and substr(\"position_projections\".\"funding_accrued_raw\", 1, 1) between '1' and '9'\n  )\n  or (\n    substr(\"position_projections\".\"funding_accrued_raw\", 1, 1) = '-'\n    and length(\"position_projections\".\"funding_accrued_raw\") > 1\n    and substr(\"position_projections\".\"funding_accrued_raw\", 2) not glob '*[^0-9]*'\n    and substr(\"position_projections\".\"funding_accrued_raw\", 2, 1) between '1' and '9'\n  )\n"
+        },
+        "position_projections_decimals_check": {
+          "name": "position_projections_decimals_check",
+          "value": "\"position_projections\".\"size_decimals\" between 0 and 36 and \"position_projections\".\"price_decimals\" between 0 and 36 and \"position_projections\".\"collateral_decimals\" between 0 and 36"
+        },
+        "position_projections_block_check": {
+          "name": "position_projections_block_check",
+          "value": "\"position_projections\".\"updated_block_number\" >= 0"
+        }
+      }
+    },
+    "trade_projections": {
+      "name": "trade_projections",
+      "columns": {
+        "trade_key": {
+          "name": "trade_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "venue_address": {
+          "name": "venue_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "onchain_trade_id": {
+          "name": "onchain_trade_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "onchain_order_id": {
+          "name": "onchain_order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "account_address": {
+          "name": "account_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "market_id": {
+          "name": "market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "side": {
+          "name": "side",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "liquidity_role": {
+          "name": "liquidity_role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "size_raw": {
+          "name": "size_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "price_raw": {
+          "name": "price_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fee_raw": {
+          "name": "fee_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "realized_pnl_raw": {
+          "name": "realized_pnl_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "size_decimals": {
+          "name": "size_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "price_decimals": {
+          "name": "price_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "collateral_decimals": {
+          "name": "collateral_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "block_number": {
+          "name": "block_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "block_timestamp": {
+          "name": "block_timestamp",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_event_id": {
+          "name": "source_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "trade_projections_source_event_id_unique": {
+          "name": "trade_projections_source_event_id_unique",
+          "columns": [
+            "source_event_id"
+          ],
+          "isUnique": true
+        },
+        "uq_trade_projections_venue_trade": {
+          "name": "uq_trade_projections_venue_trade",
+          "columns": [
+            "chain_id",
+            "venue_address",
+            "onchain_trade_id"
+          ],
+          "isUnique": true
+        },
+        "idx_trade_projections_account_block": {
+          "name": "idx_trade_projections_account_block",
+          "columns": [
+            "chain_id",
+            "account_address",
+            "block_number"
+          ],
+          "isUnique": false
+        },
+        "idx_trade_projections_market_block": {
+          "name": "idx_trade_projections_market_block",
+          "columns": [
+            "chain_id",
+            "venue_address",
+            "market_id",
+            "block_number"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "trade_projections_source_event_id_chain_events_event_id_fk": {
+          "name": "trade_projections_source_event_id_chain_events_event_id_fk",
+          "tableFrom": "trade_projections",
+          "tableTo": "chain_events",
+          "columnsFrom": [
+            "source_event_id"
+          ],
+          "columnsTo": [
+            "event_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "trade_projections_chain_check": {
+          "name": "trade_projections_chain_check",
+          "value": "\"trade_projections\".\"chain_id\" > 0"
+        },
+        "trade_projections_venue_check": {
+          "name": "trade_projections_venue_check",
+          "value": "\n  length(\"trade_projections\".\"venue_address\") = 42\n  and substr(\"trade_projections\".\"venue_address\", 1, 2) = '0x'\n  and \"trade_projections\".\"venue_address\" = lower(\"trade_projections\".\"venue_address\")\n  and substr(\"trade_projections\".\"venue_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "trade_projections_account_check": {
+          "name": "trade_projections_account_check",
+          "value": "\n  length(\"trade_projections\".\"account_address\") = 42\n  and substr(\"trade_projections\".\"account_address\", 1, 2) = '0x'\n  and \"trade_projections\".\"account_address\" = lower(\"trade_projections\".\"account_address\")\n  and substr(\"trade_projections\".\"account_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "trade_projections_side_check": {
+          "name": "trade_projections_side_check",
+          "value": "\"trade_projections\".\"side\" in ('long', 'short')"
+        },
+        "trade_projections_liquidity_check": {
+          "name": "trade_projections_liquidity_check",
+          "value": "\"trade_projections\".\"liquidity_role\" is null or \"trade_projections\".\"liquidity_role\" in ('maker', 'taker')"
+        },
+        "trade_projections_size_check": {
+          "name": "trade_projections_size_check",
+          "value": "\n  length(\"trade_projections\".\"size_raw\") > 0\n  and \"trade_projections\".\"size_raw\" not glob '*[^0-9]*'\n  and (\"trade_projections\".\"size_raw\" = '0' or substr(\"trade_projections\".\"size_raw\", 1, 1) between '1' and '9')\n"
+        },
+        "trade_projections_price_check": {
+          "name": "trade_projections_price_check",
+          "value": "\n  length(\"trade_projections\".\"price_raw\") > 0\n  and \"trade_projections\".\"price_raw\" not glob '*[^0-9]*'\n  and (\"trade_projections\".\"price_raw\" = '0' or substr(\"trade_projections\".\"price_raw\", 1, 1) between '1' and '9')\n"
+        },
+        "trade_projections_fee_check": {
+          "name": "trade_projections_fee_check",
+          "value": "\n  length(\"trade_projections\".\"fee_raw\") > 0\n  and \"trade_projections\".\"fee_raw\" not glob '*[^0-9]*'\n  and (\"trade_projections\".\"fee_raw\" = '0' or substr(\"trade_projections\".\"fee_raw\", 1, 1) between '1' and '9')\n"
+        },
+        "trade_projections_realized_pnl_check": {
+          "name": "trade_projections_realized_pnl_check",
+          "value": "\"trade_projections\".\"realized_pnl_raw\" is null or (\n  \"trade_projections\".\"realized_pnl_raw\" = '0'\n  or (\n    \"trade_projections\".\"realized_pnl_raw\" not glob '*[^0-9]*'\n    and substr(\"trade_projections\".\"realized_pnl_raw\", 1, 1) between '1' and '9'\n  )\n  or (\n    substr(\"trade_projections\".\"realized_pnl_raw\", 1, 1) = '-'\n    and length(\"trade_projections\".\"realized_pnl_raw\") > 1\n    and substr(\"trade_projections\".\"realized_pnl_raw\", 2) not glob '*[^0-9]*'\n    and substr(\"trade_projections\".\"realized_pnl_raw\", 2, 1) between '1' and '9'\n  )\n)"
+        },
+        "trade_projections_decimals_check": {
+          "name": "trade_projections_decimals_check",
+          "value": "\"trade_projections\".\"size_decimals\" between 0 and 36 and \"trade_projections\".\"price_decimals\" between 0 and 36 and \"trade_projections\".\"collateral_decimals\" between 0 and 36"
+        },
+        "trade_projections_block_check": {
+          "name": "trade_projections_block_check",
+          "value": "\"trade_projections\".\"block_number\" >= 0 and \"trade_projections\".\"block_timestamp\" >= 0"
+        }
+      }
+    },
+    "user_market_favorites": {
+      "name": "user_market_favorites",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "market_id": {
+          "name": "market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "user_market_favorites_user_id_app_users_id_fk": {
+          "name": "user_market_favorites_user_id_app_users_id_fk",
+          "tableFrom": "user_market_favorites",
+          "tableTo": "app_users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "pk_user_market_favorites": {
+          "columns": [
+            "user_id",
+            "market_id"
+          ],
+          "name": "pk_user_market_favorites"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "user_preferences": {
+      "name": "user_preferences",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "language": {
+          "name": "language",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'en'"
+        },
+        "default_market_id": {
+          "name": "default_market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'btc-usdt'"
+        },
+        "chart_interval": {
+          "name": "chart_interval",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'15'"
+        },
+        "reduce_motion": {
+          "name": "reduce_motion",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "ui_preferences_json": {
+          "name": "ui_preferences_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'{}'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "user_preferences_user_id_app_users_id_fk": {
+          "name": "user_preferences_user_id_app_users_id_fk",
+          "tableFrom": "user_preferences",
+          "tableTo": "app_users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "user_preferences_language_check": {
+          "name": "user_preferences_language_check",
+          "value": "\"user_preferences\".\"language\" = 'en'"
+        },
+        "user_preferences_interval_check": {
+          "name": "user_preferences_interval_check",
+          "value": "\"user_preferences\".\"chart_interval\" in ('1', '5', '15', '30', '60', '240', 'D')"
+        },
+        "user_preferences_reduce_motion_check": {
+          "name": "user_preferences_reduce_motion_check",
+          "value": "\"user_preferences\".\"reduce_motion\" in (0, 1)"
+        },
+        "user_preferences_json_check": {
+          "name": "user_preferences_json_check",
+          "value": "json_valid(\"user_preferences\".\"ui_preferences_json\")"
+        }
+      }
+    },
+    "user_wallet_links": {
+      "name": "user_wallet_links",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "wallet_id": {
+          "name": "wallet_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "verification_method": {
+          "name": "verification_method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "proof_hash": {
+          "name": "proof_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "is_primary": {
+          "name": "is_primary",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "verified_at": {
+          "name": "verified_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "linked_at": {
+          "name": "linked_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        },
+        "unlinked_at": {
+          "name": "unlinked_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "uq_active_wallet_owner": {
+          "name": "uq_active_wallet_owner",
+          "columns": [
+            "wallet_id"
+          ],
+          "isUnique": true,
+          "where": "\"user_wallet_links\".\"unlinked_at\" is null"
+        },
+        "uq_active_primary_wallet": {
+          "name": "uq_active_primary_wallet",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": true,
+          "where": "\"user_wallet_links\".\"is_primary\" = 1 and \"user_wallet_links\".\"unlinked_at\" is null"
+        },
+        "idx_wallet_links_user_active": {
+          "name": "idx_wallet_links_user_active",
+          "columns": [
+            "user_id",
+            "linked_at"
+          ],
+          "isUnique": false,
+          "where": "\"user_wallet_links\".\"unlinked_at\" is null"
+        }
+      },
+      "foreignKeys": {
+        "user_wallet_links_user_id_app_users_id_fk": {
+          "name": "user_wallet_links_user_id_app_users_id_fk",
+          "tableFrom": "user_wallet_links",
+          "tableTo": "app_users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "user_wallet_links_wallet_id_wallets_id_fk": {
+          "name": "user_wallet_links_wallet_id_wallets_id_fk",
+          "tableFrom": "user_wallet_links",
+          "tableTo": "wallets",
+          "columnsFrom": [
+            "wallet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "wallet_links_verification_check": {
+          "name": "wallet_links_verification_check",
+          "value": "\"user_wallet_links\".\"verification_method\" in ('siwe_eoa', 'eip1271', 'privy_attestation')"
+        },
+        "wallet_links_primary_check": {
+          "name": "wallet_links_primary_check",
+          "value": "\"user_wallet_links\".\"is_primary\" in (0, 1)"
+        },
+        "wallet_links_timestamps_check": {
+          "name": "wallet_links_timestamps_check",
+          "value": "\"user_wallet_links\".\"unlinked_at\" is null or \"user_wallet_links\".\"unlinked_at\" >= \"user_wallet_links\".\"linked_at\""
+        }
+      }
+    },
+    "vault_activity": {
+      "name": "vault_activity",
+      "columns": {
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "vault_address": {
+          "name": "vault_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "direction": {
+          "name": "direction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "account_address": {
+          "name": "account_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "recipient_address": {
+          "name": "recipient_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "asset_kind": {
+          "name": "asset_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "asset_address": {
+          "name": "asset_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "asset_symbol_snapshot": {
+          "name": "asset_symbol_snapshot",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "asset_decimals": {
+          "name": "asset_decimals",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "amount_raw": {
+          "name": "amount_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_vault_activity_account": {
+          "name": "idx_vault_activity_account",
+          "columns": [
+            "chain_id",
+            "account_address"
+          ],
+          "isUnique": false
+        },
+        "idx_vault_activity_vault": {
+          "name": "idx_vault_activity_vault",
+          "columns": [
+            "chain_id",
+            "vault_address"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "vault_activity_event_id_chain_events_event_id_fk": {
+          "name": "vault_activity_event_id_chain_events_event_id_fk",
+          "tableFrom": "vault_activity",
+          "tableTo": "chain_events",
+          "columnsFrom": [
+            "event_id"
+          ],
+          "columnsTo": [
+            "event_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "vault_activity_direction_check": {
+          "name": "vault_activity_direction_check",
+          "value": "\"vault_activity\".\"direction\" in ('deposit', 'withdraw')"
+        },
+        "vault_activity_asset_kind_check": {
+          "name": "vault_activity_asset_kind_check",
+          "value": "\"vault_activity\".\"asset_kind\" in ('native', 'erc20')"
+        },
+        "vault_activity_decimals_check": {
+          "name": "vault_activity_decimals_check",
+          "value": "\"vault_activity\".\"asset_decimals\" between 0 and 36"
+        },
+        "vault_activity_chain_check": {
+          "name": "vault_activity_chain_check",
+          "value": "\"vault_activity\".\"chain_id\" > 0"
+        },
+        "vault_activity_vault_check": {
+          "name": "vault_activity_vault_check",
+          "value": "\n  length(\"vault_activity\".\"vault_address\") = 42\n  and substr(\"vault_activity\".\"vault_address\", 1, 2) = '0x'\n  and \"vault_activity\".\"vault_address\" = lower(\"vault_activity\".\"vault_address\")\n  and substr(\"vault_activity\".\"vault_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "vault_activity_account_check": {
+          "name": "vault_activity_account_check",
+          "value": "\n  length(\"vault_activity\".\"account_address\") = 42\n  and substr(\"vault_activity\".\"account_address\", 1, 2) = '0x'\n  and \"vault_activity\".\"account_address\" = lower(\"vault_activity\".\"account_address\")\n  and substr(\"vault_activity\".\"account_address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "vault_activity_recipient_check": {
+          "name": "vault_activity_recipient_check",
+          "value": "\"vault_activity\".\"recipient_address\" is null or (\n  length(\"vault_activity\".\"recipient_address\") = 42\n  and substr(\"vault_activity\".\"recipient_address\", 1, 2) = '0x'\n  and \"vault_activity\".\"recipient_address\" = lower(\"vault_activity\".\"recipient_address\")\n  and substr(\"vault_activity\".\"recipient_address\", 3) not glob '*[^0-9a-f]*'\n)"
+        },
+        "vault_activity_asset_address_check": {
+          "name": "vault_activity_asset_address_check",
+          "value": "(\"vault_activity\".\"asset_kind\" = 'native' and \"vault_activity\".\"asset_address\" is null) or (\"vault_activity\".\"asset_kind\" = 'erc20' and \"vault_activity\".\"asset_address\" is not null and (\n  length(\"vault_activity\".\"asset_address\") = 42\n  and substr(\"vault_activity\".\"asset_address\", 1, 2) = '0x'\n  and \"vault_activity\".\"asset_address\" = lower(\"vault_activity\".\"asset_address\")\n  and substr(\"vault_activity\".\"asset_address\", 3) not glob '*[^0-9a-f]*'\n))"
+        },
+        "vault_activity_amount_check": {
+          "name": "vault_activity_amount_check",
+          "value": "\n  length(\"vault_activity\".\"amount_raw\") > 0\n  and \"vault_activity\".\"amount_raw\" not glob '*[^0-9]*'\n  and (\"vault_activity\".\"amount_raw\" = '0' or substr(\"vault_activity\".\"amount_raw\", 1, 1) between '1' and '9')\n"
+        }
+      }
+    },
+    "wallet_challenges": {
+      "name": "wallet_challenges",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "address": {
+          "name": "address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "message_hash": {
+          "name": "message_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        }
+      },
+      "indexes": {
+        "uq_wallet_challenges_message_hash": {
+          "name": "uq_wallet_challenges_message_hash",
+          "columns": [
+            "message_hash"
+          ],
+          "isUnique": true
+        },
+        "idx_wallet_challenges_user_expiry": {
+          "name": "idx_wallet_challenges_user_expiry",
+          "columns": [
+            "user_id",
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "wallet_challenges_user_id_app_users_id_fk": {
+          "name": "wallet_challenges_user_id_app_users_id_fk",
+          "tableFrom": "wallet_challenges",
+          "tableTo": "app_users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "wallet_challenges_chain_check": {
+          "name": "wallet_challenges_chain_check",
+          "value": "\"wallet_challenges\".\"chain_id\" > 0"
+        },
+        "wallet_challenges_address_check": {
+          "name": "wallet_challenges_address_check",
+          "value": "\n  length(\"wallet_challenges\".\"address\") = 42\n  and substr(\"wallet_challenges\".\"address\", 1, 2) = '0x'\n  and \"wallet_challenges\".\"address\" = lower(\"wallet_challenges\".\"address\")\n  and substr(\"wallet_challenges\".\"address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "wallet_challenges_hash_check": {
+          "name": "wallet_challenges_hash_check",
+          "value": "\n  length(\"wallet_challenges\".\"message_hash\") = 66\n  and substr(\"wallet_challenges\".\"message_hash\", 1, 2) = '0x'\n  and \"wallet_challenges\".\"message_hash\" = lower(\"wallet_challenges\".\"message_hash\")\n  and substr(\"wallet_challenges\".\"message_hash\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "wallet_challenges_expiry_check": {
+          "name": "wallet_challenges_expiry_check",
+          "value": "\"wallet_challenges\".\"expires_at\" > \"wallet_challenges\".\"created_at\""
+        },
+        "wallet_challenges_consumed_check": {
+          "name": "wallet_challenges_consumed_check",
+          "value": "\"wallet_challenges\".\"consumed_at\" is null or \"wallet_challenges\".\"consumed_at\" >= \"wallet_challenges\".\"created_at\""
+        }
+      }
+    },
+    "wallets": {
+      "name": "wallets",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "address": {
+          "name": "address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "checksum_address": {
+          "name": "checksum_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "wallet_kind": {
+          "name": "wallet_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'external'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch())"
+        }
+      },
+      "indexes": {
+        "uq_wallets_chain_address": {
+          "name": "uq_wallets_chain_address",
+          "columns": [
+            "chain_id",
+            "address"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "wallets_chain_id_check": {
+          "name": "wallets_chain_id_check",
+          "value": "\"wallets\".\"chain_id\" > 0"
+        },
+        "wallets_address_check": {
+          "name": "wallets_address_check",
+          "value": "\n  length(\"wallets\".\"address\") = 42\n  and substr(\"wallets\".\"address\", 1, 2) = '0x'\n  and \"wallets\".\"address\" = lower(\"wallets\".\"address\")\n  and substr(\"wallets\".\"address\", 3) not glob '*[^0-9a-f]*'\n"
+        },
+        "wallets_kind_check": {
+          "name": "wallets_kind_check",
+          "value": "\"wallets\".\"wallet_kind\" in ('external', 'embedded', 'contract')"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

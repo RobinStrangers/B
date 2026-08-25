@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1787502672343,
+      "tag": "0000_wide_albert_cleary",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787510315119,
+      "tag": "0001_huge_miss_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787515112611,
+      "tag": "0002_kind_robin_chapel",
+      "breakpoints": true
+    }
+  ]
+}
