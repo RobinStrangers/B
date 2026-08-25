@@ -124,7 +124,52 @@ async function switchToRobinhoodChain(provider: Eip1193Provider) {
     const providerError = error as ProviderError;
     if (providerError?.code !== 4902) throw error;
     await provider.request({ method: 'wallet_addEthereumChain', params: [ROBINHOOD_CHAIN] });
+    const chainAfterAdd = await provider.request({ method: 'eth_chainId' });
+    if (typeof chainAfterAdd !== 'string' || chainAfterAdd.toLowerCase() !== ROBINHOOD_CHAIN_ID) {
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: ROBINHOOD_CHAIN_ID }] });
+    }
   }
+}
+
+async function ensureRobinhoodChain(
+  provider: Eip1193Provider,
+  wallet?: {
+    type?: string;
+    switchChain?: (chainId: number) => Promise<unknown>;
+    getEthereumProvider?: () => Promise<unknown>;
+  },
+) {
+  let activeProvider = provider;
+  const initialChain = await activeProvider.request({ method: 'eth_chainId' });
+  if (typeof initialChain === 'string' && initialChain.toLowerCase() === ROBINHOOD_CHAIN_ID) {
+    return activeProvider;
+  }
+
+  if (wallet?.type === 'ethereum' && wallet.switchChain) {
+    try {
+      await wallet.switchChain(4663);
+    } catch (error) {
+      const providerError = error as ProviderError;
+      if (providerError?.code === 4001) throw error;
+    }
+    if (wallet.getEthereumProvider) {
+      activeProvider = await wallet.getEthereumProvider() as unknown as Eip1193Provider;
+    }
+  }
+
+  let chainId = await activeProvider.request({ method: 'eth_chainId' });
+  if (typeof chainId !== 'string' || chainId.toLowerCase() !== ROBINHOOD_CHAIN_ID) {
+    await switchToRobinhoodChain(activeProvider);
+    if (wallet?.type === 'ethereum' && wallet.getEthereumProvider) {
+      activeProvider = await wallet.getEthereumProvider() as unknown as Eip1193Provider;
+    }
+    chainId = await activeProvider.request({ method: 'eth_chainId' });
+  }
+
+  if (typeof chainId !== 'string' || chainId.toLowerCase() !== ROBINHOOD_CHAIN_ID) {
+    throw new Error('Robinhood Chain switch did not complete. Switch the wallet to chain 4663 and try again.');
+  }
+  return activeProvider;
 }
 
 function initialAssets(): WalletAssetBalance[] {
@@ -387,6 +432,13 @@ export function useRobinhoodAccount() {
         return;
       }
 
+      try {
+        provider = await ensureRobinhoodChain(provider, connectedWallet);
+      } catch (switchError) {
+        if (!disposed) setError(providerMessage(switchError));
+      }
+      if (disposed) return;
+
       providerRef.current = provider;
       const runSynchronize = (providedAccounts?: unknown) => {
         setError('');
@@ -437,12 +489,9 @@ export function useRobinhoodAccount() {
     setError('');
     setBusy(true);
     try {
-      if (!isRobinhoodChain) {
-        if (connectedWallet?.type === 'ethereum') await connectedWallet.switchChain(4663);
-        else await switchToRobinhoodChain(provider);
-      }
-      const switchedProvider = await resolveProvider();
-      if (!switchedProvider) throw new Error('The connected wallet provider did not respond.');
+      const switchedProvider = !isRobinhoodChain
+        ? await ensureRobinhoodChain(provider, connectedWallet)
+        : provider;
       const accounts = await switchedProvider.request({ method: 'eth_accounts' });
       const activeAccount = Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : '';
       if (!activeAccount || activeAccount.toLowerCase() !== address.toLowerCase()) {
@@ -489,12 +538,7 @@ export function useRobinhoodAccount() {
       if (!Array.isArray(accounts) || typeof accounts[0] !== 'string') {
         throw new Error('The wallet did not return an account.');
       }
-      if (walletCandidate?.type === 'ethereum') await walletCandidate.switchChain(4663);
-      else await switchToRobinhoodChain(provider);
-      const switchedProvider = walletCandidate?.type === 'ethereum'
-        ? await walletCandidate.getEthereumProvider() as unknown as Eip1193Provider
-        : provider;
-      if (!switchedProvider) throw new Error('The connected wallet provider did not respond.');
+      const switchedProvider = await ensureRobinhoodChain(provider, walletCandidate);
       providerRef.current = switchedProvider;
       await synchronize(switchedProvider);
       const activeAccounts = await switchedProvider.request({ method: 'eth_accounts' });
@@ -523,10 +567,7 @@ export function useRobinhoodAccount() {
     setBusy(true);
     setError('');
     try {
-      if (connectedWallet?.type === 'ethereum') await connectedWallet.switchChain(4663);
-      else await switchToRobinhoodChain(provider);
-      const switchedProvider = await resolveProvider();
-      if (!switchedProvider) throw new Error('The connected wallet provider did not respond.');
+      const switchedProvider = await ensureRobinhoodChain(provider, connectedWallet);
       providerRef.current = switchedProvider;
       await synchronize(switchedProvider);
       const accounts = await switchedProvider.request({ method: 'eth_accounts' });
