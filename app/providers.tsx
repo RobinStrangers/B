@@ -121,7 +121,6 @@ export default function Providers({
           ethereum: { createOnLogin: 'users-without-wallets' },
         },
         supportedChains: [robinhoodChain],
-        defaultChain: robinhoodChain,
       }}
     >
       <VerifiedWalletSync />
