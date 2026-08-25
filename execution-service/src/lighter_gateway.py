@@ -13,6 +13,7 @@ from config import (
     LIGHTER_API_URL,
     LIGHTER_CHAIN_ID,
     TREASURY_ACCOUNT_INDEX,
+    TREASURY_ADDRESS,
 )
 from errors import ServiceError, VenueAmbiguous, VenueRejected
 from policy import treasury_matches
@@ -142,6 +143,12 @@ class LighterGateway:
         return lighter, client
 
     async def accounts_for_wallet(self, wallet_address: str) -> list[dict[str, Any]]:
+        if wallet_address.lower() == TREASURY_ADDRESS.lower():
+            raise ServiceError(
+                "TREASURY_ACCOUNT_FORBIDDEN",
+                "The Aventa treasury wallet cannot be used as a user trading account",
+                http_status=403,
+            )
         lighter, client = await self._api_client()
         try:
             response = await lighter.AccountApi(client).accounts_by_l1_address(
@@ -157,18 +164,28 @@ class LighterGateway:
                     http_status=409,
                 )
             candidates: list[dict[str, Any]] = []
+            treasury_match = False
             for raw in accounts:
                 account = _model_dict(raw)
                 address = str(account.get("l1_address") or account.get("l1Address") or wallet_address)
                 if address.lower() != wallet_address.lower():
                     continue
                 index = _integer(account.get("index"), "account index")
+                if index == TREASURY_ACCOUNT_INDEX:
+                    treasury_match = True
+                    continue
                 raw_kind = account.get("account_type", account.get("accountType", account.get("type")))
                 kind = str(raw_kind).strip().lower() if raw_kind not in {None, ""} else "trading"
                 raw_label = account.get("name", account.get("label", account.get("description")))
                 label = str(raw_label).strip() if raw_label not in {None, ""} else f"Lighter account #{index}"
                 candidates.append({"index": index, "label": label[:80], "kind": kind[:40]})
             if not candidates:
+                if treasury_match:
+                    raise ServiceError(
+                        "TREASURY_ACCOUNT_FORBIDDEN",
+                        "The Aventa treasury Lighter account cannot be used as a user trading account",
+                        http_status=403,
+                    )
                 raise ServiceError(
                     "LIGHTER_ACCOUNT_MISMATCH",
                     "Lighter account ownership could not be verified",
@@ -581,6 +598,7 @@ class LighterGateway:
         try:
             result = client.signer.SignApproveIntegrator(
                 TREASURY_ACCOUNT_INDEX,
+    TREASURY_ADDRESS,
                 INTEGRATOR_FEE_UNITS,
                 INTEGRATOR_FEE_UNITS,
                 0,

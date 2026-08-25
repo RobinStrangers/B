@@ -1,8 +1,19 @@
 'use client';
 
 import { useWallets } from '@privy-io/react-auth';
+import { decodeFunctionResult, encodeFunctionData, parseUnits, type Address, type Hex } from 'viem';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAventaAuth } from './useAventaAuth';
+import {
+  AVENTA_TREASURY_ADDRESS,
+  ROBINHOOD_LIGHTER_DEPOSIT_ABI,
+  ROBINHOOD_LIGHTER_PERPS_ROUTE,
+  ROBINHOOD_LIGHTER_PROXY,
+  ROBINHOOD_USDG_ADDRESS,
+  ROBINHOOD_USDG_ASSET_INDEX,
+  ROBINHOOD_USDG_DECIMALS,
+  USDG_ERC20_ABI,
+} from '../lib/lighter-robinhood';
 
 export type Eip1193Provider = {
   request: (request: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -63,6 +74,47 @@ function providerMessage(error: unknown) {
   const providerError = error as ProviderError;
   if (providerError?.code === 4001) return 'The wallet request was declined.';
   return providerError?.message || 'The wallet request could not be completed.';
+}
+
+type TransactionReceipt = { status?: string; transactionHash?: string };
+
+type VenueOnboardingSnapshot = {
+  accountExists: boolean;
+  accountIndexes: number[];
+};
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function waitForReceipt(provider: Eip1193Provider, txHash: string, timeoutMs = 120_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const receipt = await provider.request({ method: 'eth_getTransactionReceipt', params: [txHash] }) as TransactionReceipt | null;
+    if (receipt) {
+      if (receipt.status?.toLowerCase() === '0x0') throw new Error('The Robinhood Chain transaction reverted.');
+      return receipt;
+    }
+    await sleep(1_250);
+  }
+  throw new Error('The transaction was submitted, but confirmation is taking longer than expected. Check Robinhood Chain before retrying.');
+}
+
+async function onboardingSnapshot(address: string): Promise<VenueOnboardingSnapshot> {
+  const response = await fetch(`/api/venue/onboarding?address=${encodeURIComponent(address)}`, {
+    cache: 'no-store',
+    credentials: 'same-origin',
+  });
+  const payload = await response.json().catch(() => undefined) as unknown;
+  if (!response.ok) {
+    throw new Error(verificationResponseMessage(payload, 'Robinhood Lighter onboarding is temporarily unavailable.'));
+  }
+  if (!payload || typeof payload !== 'object') throw new Error('Robinhood Lighter onboarding returned an invalid response.');
+  const root = payload as Record<string, unknown>;
+  const indexes = Array.isArray(root.accountIndexes)
+    ? root.accountIndexes.filter((value): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
+    : [];
+  return { accountExists: root.accountExists === true, accountIndexes: indexes };
 }
 
 async function switchToRobinhoodChain(provider: Eip1193Provider) {
@@ -510,6 +562,146 @@ export function useRobinhoodAccount() {
     return signature;
   }, [address, resolveProvider]);
 
+  const depositUsdg = useCallback(async (amount: string) => {
+    if (!address) throw new Error('Connect an EVM wallet before depositing USDG.');
+    if (address.toLowerCase() === AVENTA_TREASURY_ADDRESS.toLowerCase()) {
+      throw new Error('The Aventa treasury wallet cannot be used as a user trading account.');
+    }
+
+    const normalizedAmount = amount.trim();
+    if (!/^\d+(?:\.\d{1,6})?$/.test(normalizedAmount)) {
+      throw new Error('Enter a valid USDG amount with no more than 6 decimal places.');
+    }
+    const rawAmount = parseUnits(normalizedAmount, ROBINHOOD_USDG_DECIMALS);
+    if (rawAmount <= 0n) throw new Error('Deposit amount must be greater than zero.');
+
+    const usdgBalance = assets.find((asset) => asset.symbol === 'USDG');
+    if (usdgBalance?.status === 'live' && usdgBalance.balance && /^\d+(?:\.\d+)?$/.test(usdgBalance.balance)) {
+      const walletBalance = parseUnits(usdgBalance.balance, ROBINHOOD_USDG_DECIMALS);
+      if (rawAmount > walletBalance) throw new Error('Deposit amount exceeds the USDG available in this wallet.');
+    }
+
+    const ethBalance = assets.find((asset) => asset.symbol === 'ETH');
+    if (ethBalance?.status === 'live' && ethBalance.balance && Number(ethBalance.balance) <= 0) {
+      throw new Error('This wallet needs a small amount of ETH on Robinhood Chain for gas.');
+    }
+
+    setBusy(true);
+    setError('');
+    try {
+      let provider = await resolveProvider();
+      if (!provider) throw new Error('No EVM wallet was detected in this browser.');
+
+      const currentChain = await provider.request({ method: 'eth_chainId' });
+      if (typeof currentChain !== 'string' || currentChain.toLowerCase() !== ROBINHOOD_CHAIN_ID) {
+        if (connectedWallet?.type === 'ethereum') await connectedWallet.switchChain(4663);
+        else await switchToRobinhoodChain(provider);
+        provider = await resolveProvider();
+        if (!provider) throw new Error('The connected wallet provider did not respond after switching network.');
+      }
+
+      const accounts = await provider.request({ method: 'eth_accounts' });
+      const activeAccount = Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : '';
+      if (!activeAccount || activeAccount.toLowerCase() !== address.toLowerCase()) {
+        throw new Error('The active wallet account changed. Reconnect the wallet and try again.');
+      }
+      if (activeAccount.toLowerCase() === AVENTA_TREASURY_ADDRESS.toLowerCase()) {
+        throw new Error('The Aventa treasury wallet cannot be used as a user trading account.');
+      }
+
+      const verified = ownershipVerified || await verifyOwnershipWithProvider(provider, activeAccount);
+      if (!verified) throw new Error('Verify wallet ownership before depositing trading collateral.');
+
+      // This preflight rejects the treasury wallet/account and records whether
+      // Lighter already has an account for this L1 address. A missing account is
+      // expected for first-time users; the deposit itself is addressed to the wallet.
+      await onboardingSnapshot(activeAccount);
+
+      const allowanceData = encodeFunctionData({
+        abi: USDG_ERC20_ABI,
+        functionName: 'allowance',
+        args: [activeAccount as Address, ROBINHOOD_LIGHTER_PROXY],
+      });
+      const allowanceResult = await provider.request({
+        method: 'eth_call',
+        params: [{ to: ROBINHOOD_USDG_ADDRESS, data: allowanceData }, 'latest'],
+      });
+      if (typeof allowanceResult !== 'string') throw new Error('USDG allowance could not be read from Robinhood Chain.');
+      const allowance = decodeFunctionResult({
+        abi: USDG_ERC20_ABI,
+        functionName: 'allowance',
+        data: allowanceResult as Hex,
+      });
+
+      if (allowance < rawAmount) {
+        const approvalData = encodeFunctionData({
+          abi: USDG_ERC20_ABI,
+          functionName: 'approve',
+          args: [ROBINHOOD_LIGHTER_PROXY, rawAmount],
+        });
+        const approvalHash = await provider.request({
+          method: 'eth_sendTransaction',
+          params: [{ from: activeAccount, to: ROBINHOOD_USDG_ADDRESS, data: approvalData, value: '0x0' }],
+        });
+        if (typeof approvalHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(approvalHash)) {
+          throw new Error('The wallet did not return a valid USDG approval transaction hash.');
+        }
+        await waitForReceipt(provider, approvalHash);
+      }
+
+      const depositData = encodeFunctionData({
+        abi: ROBINHOOD_LIGHTER_DEPOSIT_ABI,
+        functionName: 'deposit',
+        args: [
+          activeAccount as Address,
+          ROBINHOOD_USDG_ASSET_INDEX,
+          ROBINHOOD_LIGHTER_PERPS_ROUTE,
+          rawAmount,
+        ],
+      });
+      const depositHash = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [{ from: activeAccount, to: ROBINHOOD_LIGHTER_PROXY, data: depositData, value: '0x0' }],
+      });
+      if (typeof depositHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(depositHash)) {
+        throw new Error('The wallet did not return a valid Lighter deposit transaction hash.');
+      }
+      await waitForReceipt(provider, depositHash);
+      await refreshBalances(activeAccount);
+      window.dispatchEvent(new CustomEvent('aventa:deposit-confirmed', { detail: { address: activeAccount, txHash: depositHash } }));
+
+      const immediateSnapshot = await onboardingSnapshot(activeAccount).catch(() => undefined);
+      if (immediateSnapshot?.accountExists && immediateSnapshot.accountIndexes.length) {
+        const accountIndex = immediateSnapshot.accountIndexes[0];
+        window.dispatchEvent(new CustomEvent('aventa:venue-account-ready', { detail: { address: activeAccount, accountIndex } }));
+        return { txHash: depositHash, accountReady: true as const, accountIndex };
+      }
+
+      // Venue indexing can lag the L1 receipt. Do not keep the wallet UI blocked
+      // while that happens; continue bounded discovery in the background.
+      void (async () => {
+        const deadline = Date.now() + 90_000;
+        while (Date.now() < deadline) {
+          await sleep(2_500);
+          const snapshot = await onboardingSnapshot(activeAccount).catch(() => undefined);
+          if (snapshot?.accountExists && snapshot.accountIndexes.length) {
+            window.dispatchEvent(new CustomEvent('aventa:venue-account-ready', {
+              detail: { address: activeAccount, accountIndex: snapshot.accountIndexes[0] },
+            }));
+            return;
+          }
+        }
+      })();
+
+      return { txHash: depositHash, accountReady: false as const, accountIndex: undefined };
+    } catch (requestError) {
+      setError(providerMessage(requestError));
+      throw requestError;
+    } finally {
+      setBusy(false);
+    }
+  }, [address, assets, connectedWallet, ownershipVerified, refreshBalances, resolveProvider, verifyOwnershipWithProvider]);
+
   const disconnect = useCallback(async () => {
     requestGeneration.current += 1;
     setBusy(true);
@@ -534,6 +726,7 @@ export function useRobinhoodAccount() {
     busy,
     connect,
     disconnect,
+    depositUsdg,
     error,
     isRobinhoodChain,
     ownershipVerified,
@@ -544,7 +737,7 @@ export function useRobinhoodAccount() {
     verifyOwnership,
     switchNetwork,
     updatedAt,
-  }), [address, assets, busy, connect, disconnect, error, isRobinhoodChain, ownershipVerified, refresh, refreshOwnershipVerification, signMessage, switchNetwork, updatedAt, verificationBusy, verifyOwnership]);
+  }), [address, assets, busy, connect, depositUsdg, disconnect, error, isRobinhoodChain, ownershipVerified, refresh, refreshOwnershipVerification, signMessage, switchNetwork, updatedAt, verificationBusy, verifyOwnership]);
 }
 
 export type RobinhoodAccountState = ReturnType<typeof useRobinhoodAccount>;

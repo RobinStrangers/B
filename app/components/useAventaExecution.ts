@@ -161,11 +161,16 @@ export function useAventaExecution(marketId: string) {
     const initialRefresh = window.setTimeout(() => { void refresh(); }, 0);
     if (!authenticated) return () => window.clearTimeout(initialRefresh);
     const visibleRefresh = () => { if (document.visibilityState === 'visible') void refresh(); };
+    const venueAccountRefresh = () => { void refresh(); };
     document.addEventListener('visibilitychange', visibleRefresh);
+    window.addEventListener('aventa:venue-account-ready', venueAccountRefresh);
+    window.addEventListener('aventa:deposit-confirmed', venueAccountRefresh);
     const interval = window.setInterval(visibleRefresh, 20_000);
     return () => {
       window.clearTimeout(initialRefresh);
       document.removeEventListener('visibilitychange', visibleRefresh);
+      window.removeEventListener('aventa:venue-account-ready', venueAccountRefresh);
+      window.removeEventListener('aventa:deposit-confirmed', venueAccountRefresh);
       window.clearInterval(interval);
     };
   }, [authenticated, refresh]);

@@ -1393,7 +1393,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .account-transfer-summary { margin-top: 17px; padding-block: 10px; border-block: 1px solid #68737a; }
 .account-transfer-summary > div { min-height: 29px; display: flex; align-items: center; justify-content: space-between; gap: 18px; color: #808080; font-size: 8px; }
 .account-transfer-summary strong { color: #b8bdc0; font-weight: 580; text-align: right; }
-.account-transfer-submit { width: 100%; min-height: 48px; margin-top: 17px; border: 1px solid #68737a; border-radius: 6px 19px 6px 16px; background: #374550; color: #808080; font-size: 9px; cursor: not-allowed; }
+.account-transfer-submit { width: 100%; min-height: 48px; margin-top: 17px; border: 1px solid #fc6224; border-radius: 6px 19px 6px 16px; background: #fc6224; color: #2b3740; font-size: 9px; font-weight: 760; cursor: pointer; }
+.account-transfer-submit:disabled { border-color: #68737a; background: #374550; color: #808080; font-weight: 500; cursor: not-allowed; }
+.account-transfer-notice { margin: 12px 2px 0; padding: 10px; border: 1px solid rgba(252, 98, 36, .45); border-radius: 5px 14px 5px 12px; color: #f2f2f2; font-size: 7px; line-height: 1.6; }
+.account-transfer-notice a { color: #fc6224; }
 .account-transfer-warning { margin: 12px 2px 0; color: #808080; font-size: 7px; line-height: 1.6; }
 .account-history-head { display: flex; align-items: center; justify-content: space-between; margin-top: 25px; padding-bottom: 13px; border-bottom: 1px solid #68737a; }
 .account-history-head span { color: #fc6224; font: 700 8px var(--font-geist-mono), monospace; letter-spacing: .13em; }.account-history-head small { color: #808080; font-size: 8px; }

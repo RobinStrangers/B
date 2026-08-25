@@ -445,11 +445,16 @@ function useVenueAccount(address: string, market: Market) {
     };
     void load();
     const handleVisibility = () => { if (document.visibilityState === 'visible') void load(); };
+    const handleVenueAccountReady = () => { void load(); };
     document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('aventa:venue-account-ready', handleVenueAccountReady);
+    window.addEventListener('aventa:deposit-confirmed', handleVenueAccountReady);
     const timer = window.setInterval(load, 12_000);
     return () => {
       stopped = true;
       document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('aventa:venue-account-ready', handleVenueAccountReady);
+      window.removeEventListener('aventa:deposit-confirmed', handleVenueAccountReady);
       window.clearInterval(timer);
       controller?.abort();
     };

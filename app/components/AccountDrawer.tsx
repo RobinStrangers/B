@@ -99,6 +99,8 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
   const [mode, setMode] = useState<TransferMode>('deposit');
   const [selectedAsset, setSelectedAsset] = useState<'ETH' | 'USDG'>('USDG');
   const [amount, setAmount] = useState('');
+  const [depositNotice, setDepositNotice] = useState('');
+  const [depositTxHash, setDepositTxHash] = useState('');
   const [authOpen, setAuthOpen] = useState(false);
   const [session, setSession] = useState<DisplaySession>();
   const [historyState, setHistoryState] = useState<HistoryState>();
@@ -120,6 +122,12 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
   const maxDepositAmount = currentAsset?.status === 'live' && currentAsset.balance && /^\d+(?:\.\d+)?$/.test(currentAsset.balance)
     ? currentAsset.balance
     : undefined;
+  const depositReady = mode === 'deposit'
+    && selectedAsset === 'USDG'
+    && Boolean(amount)
+    && account.isRobinhoodChain
+    && account.ownershipVerified
+    && !account.busy;
   const historyKey = account.address ? account.address.toLowerCase() : '';
   const historyScopeKey = `${historyKey}:${privyAuthenticated ? 'privy' : 'fallback'}`;
   const history = historyState?.key === historyScopeKey ? historyState.response : undefined;
@@ -240,6 +248,22 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
     if (/^\d*\.?\d*$/.test(nextAmount)) setAmount(nextAmount);
   };
 
+  const handleDeposit = async () => {
+    if (!depositReady) return;
+    setDepositNotice('Preparing a direct USDG deposit to Robinhood Lighter…');
+    setDepositTxHash('');
+    try {
+      const result = await account.depositUsdg(amount);
+      setDepositTxHash(result.txHash);
+      setAmount('');
+      setDepositNotice(result.accountReady
+        ? `Deposit confirmed. Lighter account #${result.accountIndex} is ready for trading activation.`
+        : 'Deposit confirmed on Robinhood Chain. Lighter is still indexing the trading account; Aventa will detect it automatically.');
+    } catch (depositError) {
+      setDepositNotice(depositError instanceof Error ? depositError.message : 'The deposit could not be completed.');
+    }
+  };
+
   if (!open || typeof document === 'undefined') return null;
 
   return createPortal(
@@ -291,15 +315,16 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
 
           {account.address && account.isRobinhoodChain && tab === 'transfer' && (
             <div className="account-transfer-view" role="tabpanel" id="account-panel-transfer" aria-labelledby="account-tab-transfer">
-              <div className="account-transfer-mode">{(['deposit', 'withdraw'] as TransferMode[]).map((item) => <button type="button" aria-pressed={mode === item} className={mode === item ? 'active' : ''} onClick={() => setMode(item)} key={item}>{item === 'deposit' ? 'Deposit' : 'Withdraw'}</button>)}</div>
+              <div className="account-transfer-mode">{(['deposit', 'withdraw'] as TransferMode[]).map((item) => <button type="button" aria-pressed={mode === item} className={mode === item ? 'active' : ''} onClick={() => item === 'deposit' && setMode(item)} disabled={item === 'withdraw'} title={item === 'withdraw' ? 'Native withdrawal will be enabled after signer activation is complete.' : undefined} key={item}>{item === 'deposit' ? 'Deposit' : 'Withdraw'}</button>)}</div>
               <span className="account-field-label">Asset</span>
               <div className="account-asset-selector">
-                {account.assets.map((asset) => <button type="button" aria-pressed={selectedAsset === asset.symbol} className={selectedAsset === asset.symbol ? 'active' : ''} onClick={() => setSelectedAsset(asset.symbol)} key={asset.symbol}><TokenIcon symbol={asset.symbol} variant="branded" size={22} fallback={asset.symbol.slice(0, 1)} /><span>{asset.symbol}</span><small>{asset.balance ?? '—'}</small></button>)}
+                {account.assets.filter((asset) => asset.symbol === 'USDG').map((asset) => <button type="button" aria-pressed={selectedAsset === asset.symbol} className={selectedAsset === asset.symbol ? 'active' : ''} onClick={() => setSelectedAsset(asset.symbol)} key={asset.symbol}><TokenIcon symbol={asset.symbol} variant="branded" size={22} fallback={asset.symbol.slice(0, 1)} /><span>{asset.symbol}</span><small>{asset.balance ?? '—'}</small></button>)}
               </div>
-              <label className="account-amount-field"><span><b>Amount</b><small>{mode === 'deposit' ? `Wallet available ${currentAsset?.balance ?? '—'} ${selectedAsset}` : `Vault available — ${selectedAsset}`}</small></span><div><input inputMode="decimal" value={amount} onChange={handleAmountChange} placeholder="0.00" aria-label={`${mode} amount`} /><button type="button" disabled={mode !== 'deposit' || !maxDepositAmount} onClick={() => maxDepositAmount && setAmount(maxDepositAmount)}>MAX</button><strong>{selectedAsset}</strong></div></label>
-              <div className="account-transfer-summary"><div><span>Route</span><strong>{mode === 'deposit' ? 'Wallet → Aventa vault' : 'Aventa vault → Wallet'}</strong></div><div><span>Network</span><strong>Robinhood Chain · 4663</strong></div><div><span>Vault</span><strong>{vaultConfigured ? 'Address configured' : 'Not configured'}</strong></div></div>
-              <button className="account-transfer-submit" type="button" disabled>{vaultConfigured ? 'Audited vault adapter required' : 'Vault configuration required'}</button>
-              <p className="account-transfer-warning">No approval or transaction request will be sent until the audited vault contract, ABI, limits, and transaction simulation are integrated.</p>
+              <label className="account-amount-field"><span><b>Amount</b><small>{mode === 'deposit' ? `Wallet available ${currentAsset?.balance ?? '—'} ${selectedAsset}` : `Venue available — ${selectedAsset}`}</small></span><div><input inputMode="decimal" value={amount} onChange={handleAmountChange} placeholder="0.00" aria-label={`${mode} amount`} /><button type="button" disabled={mode !== 'deposit' || !maxDepositAmount} onClick={() => maxDepositAmount && setAmount(maxDepositAmount)}>MAX</button><strong>{selectedAsset}</strong></div></label>
+              <div className="account-transfer-summary"><div><span>Route</span><strong>Wallet → Robinhood Lighter</strong></div><div><span>Network</span><strong>Robinhood Chain · 4663</strong></div><div><span>Collateral</span><strong>USDG · Perps margin</strong></div></div>
+              <button className="account-transfer-submit" type="button" disabled={!depositReady} onClick={() => void handleDeposit()}>{account.busy ? 'Waiting for wallet / chain…' : !account.ownershipVerified ? 'Verify wallet to deposit' : 'Deposit USDG & onboard'}</button>
+              {depositNotice && <p className="account-transfer-notice" role="status">{depositNotice}{depositTxHash && <a href={`https://robinhoodchain.blockscout.com/tx/${depositTxHash}`} target="_blank" rel="noreferrer"> View transaction ↗</a>}</p>}
+              <p className="account-transfer-warning">USDG moves directly from your self-custody wallet into Robinhood Lighter's margin contract. Aventa never takes custody. First-time wallets are credited by the venue from this deposit and Aventa watches for the resulting Lighter account automatically.</p>
             </div>
           )}
 
