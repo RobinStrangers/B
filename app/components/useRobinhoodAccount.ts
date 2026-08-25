@@ -139,10 +139,43 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function waitForReceipt(provider: Eip1193Provider, txHash: string, timeoutMs = 120_000) {
+function rpcResponseMessage(payload: unknown, fallback: string) {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const root = payload as Record<string, unknown>;
+  const error = root.error;
+  if (!error || typeof error !== 'object') return fallback;
+  const row = error as Record<string, unknown>;
+  const message = typeof row.message === 'string' && row.message.trim() ? row.message.trim() : fallback;
+  const rpcCode = typeof row.rpcCode === 'number' ? ` (RPC ${row.rpcCode})` : '';
+  return `${message}${rpcCode}`;
+}
+
+async function robinhoodReadRpc(method: 'eth_call' | 'eth_estimateGas' | 'eth_getTransactionReceipt', params: unknown[]) {
+  const response = await fetch('/api/chain/rpc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ method, params }),
+    cache: 'no-store',
+    credentials: 'same-origin',
+  });
+  const payload = await response.json().catch(() => undefined) as unknown;
+  if (!response.ok) throw new Error(rpcResponseMessage(payload, 'Robinhood Chain RPC request failed.'));
+  if (!payload || typeof payload !== 'object' || !('result' in payload)) {
+    throw new Error('Robinhood Chain RPC returned an invalid response.');
+  }
+  return (payload as Record<string, unknown>).result;
+}
+
+function bufferedGas(gasHex: string) {
+  const estimate = BigInt(gasHex);
+  const padded = (estimate * BigInt(125) + BigInt(99)) / BigInt(100);
+  return `0x${padded.toString(16)}`;
+}
+
+async function waitForReceipt(txHash: string, timeoutMs = 120_000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    const receipt = await provider.request({ method: 'eth_getTransactionReceipt', params: [txHash] }) as TransactionReceipt | null;
+    const receipt = await robinhoodReadRpc('eth_getTransactionReceipt', [txHash]) as TransactionReceipt | null;
     if (receipt) {
       if (receipt.status?.toLowerCase() === '0x0') throw new Error('The Robinhood Chain transaction reverted.');
       return receipt;
@@ -719,10 +752,10 @@ export function useRobinhoodAccount() {
         functionName: 'allowance',
         args: [activeAccount as Address, ROBINHOOD_LIGHTER_PROXY],
       });
-      const allowanceResult = await provider.request({
-        method: 'eth_call',
-        params: [{ to: ROBINHOOD_USDG_ADDRESS, data: allowanceData }, 'latest'],
-      });
+      const allowanceResult = await robinhoodReadRpc('eth_call', [
+        { to: ROBINHOOD_USDG_ADDRESS, data: allowanceData },
+        'latest',
+      ]);
       if (typeof allowanceResult !== 'string') throw new Error('USDG allowance could not be read from Robinhood Chain.');
       const allowance = decodeFunctionResult({
         abi: USDG_ERC20_ABI,
@@ -737,16 +770,20 @@ export function useRobinhoodAccount() {
           args: [ROBINHOOD_LIGHTER_PROXY, rawAmount],
         });
         const approvalRequest = { from: activeAccount, to: ROBINHOOD_USDG_ADDRESS, data: approvalData, value: '0x0' };
+        let approvalGas: unknown;
         try {
-          await provider.request({ method: 'eth_estimateGas', params: [approvalRequest] });
+          approvalGas = await robinhoodReadRpc('eth_estimateGas', [approvalRequest]);
         } catch (approvalSimulationError) {
           throw new Error(`USDG approval simulation failed: ${providerMessage(approvalSimulationError)}`);
+        }
+        if (typeof approvalGas !== 'string' || !/^0x[a-fA-F0-9]+$/.test(approvalGas)) {
+          throw new Error('USDG approval simulation did not return a valid gas estimate.');
         }
         let approvalHash: unknown;
         try {
           approvalHash = await provider.request({
             method: 'eth_sendTransaction',
-            params: [approvalRequest],
+            params: [{ ...approvalRequest, gas: bufferedGas(approvalGas) }],
           });
         } catch (approvalError) {
           throw new Error(`USDG approval failed: ${providerMessage(approvalError)}`);
@@ -754,7 +791,7 @@ export function useRobinhoodAccount() {
         if (typeof approvalHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(approvalHash)) {
           throw new Error('The wallet did not return a valid USDG approval transaction hash.');
         }
-        await waitForReceipt(provider, approvalHash);
+        await waitForReceipt(approvalHash);
       }
 
       const depositData = encodeFunctionData({
@@ -768,16 +805,20 @@ export function useRobinhoodAccount() {
         ],
       });
       const depositRequest = { from: activeAccount, to: ROBINHOOD_LIGHTER_PROXY, data: depositData, value: '0x0' };
+      let depositGas: unknown;
       try {
-        await provider.request({ method: 'eth_estimateGas', params: [depositRequest] });
+        depositGas = await robinhoodReadRpc('eth_estimateGas', [depositRequest]);
       } catch (depositSimulationError) {
         throw new Error(`Lighter deposit simulation failed: ${providerMessage(depositSimulationError)}`);
+      }
+      if (typeof depositGas !== 'string' || !/^0x[a-fA-F0-9]+$/.test(depositGas)) {
+        throw new Error('Lighter deposit simulation did not return a valid gas estimate.');
       }
       let depositHash: unknown;
       try {
         depositHash = await provider.request({
           method: 'eth_sendTransaction',
-          params: [depositRequest],
+          params: [{ ...depositRequest, gas: bufferedGas(depositGas) }],
         });
       } catch (depositSendError) {
         throw new Error(`Lighter deposit failed: ${providerMessage(depositSendError)}`);
@@ -785,7 +826,7 @@ export function useRobinhoodAccount() {
       if (typeof depositHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(depositHash)) {
         throw new Error('The wallet did not return a valid Lighter deposit transaction hash.');
       }
-      await waitForReceipt(provider, depositHash);
+      await waitForReceipt(depositHash);
       await refreshBalances(activeAccount);
       window.dispatchEvent(new CustomEvent('aventa:deposit-confirmed', { detail: { address: activeAccount, txHash: depositHash } }));
 
@@ -814,8 +855,9 @@ export function useRobinhoodAccount() {
 
       return { txHash: depositHash, accountReady: false as const, accountIndex: undefined };
     } catch (requestError) {
-      setError(providerMessage(requestError));
-      throw requestError;
+      const message = providerMessage(requestError);
+      setError(message);
+      throw new Error(message);
     } finally {
       setBusy(false);
     }
