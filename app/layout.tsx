@@ -41,6 +41,11 @@ export const metadata: Metadata = {
     default: 'Aventa — Move with intent. Trade with clarity.',
     template: '%s · Aventa',
   },
+
+  other: {
+  'virtual-protocol-site-verification': 'fa626fc5cb2dd6d95b651592751a7611',
+},
+  
   description: 'A live multi-asset reference terminal and perpetual trading interface for Robinhood Chain.',
   keywords: ['perpetual markets', 'Robinhood Chain', 'crypto', 'forex', 'metals', 'commodities', 'equity references'],
   icons: { icon: '/aventa-mark.png', apple: '/aventa-mark.png' },
