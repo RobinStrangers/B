@@ -40,6 +40,20 @@ export const USDG_ERC20_ABI = [
   },
 ] as const;
 
+export const ROBINHOOD_LIGHTER_WITHDRAWAL_ABI = [
+  {
+    type: 'function',
+    name: 'withdrawPendingBalance',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: '_owner', type: 'address' },
+      { name: '_assetIndex', type: 'uint16' },
+      { name: '_baseAmount', type: 'uint128' },
+    ],
+    outputs: [],
+  },
+] as const;
+
 export const ROBINHOOD_LIGHTER_DEPOSIT_ABI = [
   {
     type: 'function',

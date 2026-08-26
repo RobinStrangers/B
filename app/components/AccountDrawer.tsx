@@ -19,6 +19,11 @@ type AccountDrawerProps = {
     notice: string;
     error: string;
     submit: (amount: string) => Promise<unknown>;
+    claimReady: boolean;
+    claimBusy: boolean;
+    claimError: string;
+    refreshClaim: () => Promise<boolean>;
+    claim: () => Promise<{ txHash: string }>;
   };
   open: boolean;
   onClose: () => void;
@@ -114,6 +119,7 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
   const [depositTxHash, setDepositTxHash] = useState('');
   const [withdrawalNotice, setWithdrawalNotice] = useState('');
   const [withdrawalTxHash, setWithdrawalTxHash] = useState('');
+  const [withdrawalClaimTxHash, setWithdrawalClaimTxHash] = useState('');
   const [authOpen, setAuthOpen] = useState(false);
   const [session, setSession] = useState<DisplaySession>();
   const [historyState, setHistoryState] = useState<HistoryState>();
@@ -154,6 +160,23 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
     && account.ownershipVerified
     && withdrawal.canSubmit
     && !withdrawal.busy;
+  const withdrawalBlockReason = mode !== 'withdraw'
+    ? ''
+    : withdrawal.busy
+      ? 'Waiting for secure execution…'
+      : !account.ownershipVerified
+        ? 'Verify wallet to withdraw'
+        : withdrawal.openPositions || (withdrawal.pendingOrderCount ?? 0) > 0
+          ? 'Close positions & cancel orders first'
+          : !/^\d+(?:\.\d+)?$/.test(amount) || !Number.isFinite(parsedWithdrawalAmount) || parsedWithdrawalAmount <= 0
+            ? 'Enter withdrawal amount'
+            : parsedWithdrawalAmount < parsedWithdrawalMinimum
+              ? `Minimum ${withdrawal.minimumAmount ?? '0'} USDG`
+              : parsedWithdrawalAmount > parsedWithdrawalAvailable
+                ? `Max ${withdrawal.availableBalance} USDG available`
+                : !withdrawal.canSubmit
+                  ? 'Withdrawal gate is not ready'
+                  : '';
   const maxTransferAmount = mode === 'deposit' ? maxDepositAmount : withdrawal.availableBalance;
   const historyKey = account.address ? account.address.toLowerCase() : '';
   const historyScopeKey = `${historyKey}:${privyAuthenticated ? 'privy' : 'fallback'}`;
@@ -304,14 +327,28 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
       setWithdrawalTxHash(txHash);
       setAmount('');
       setWithdrawalNotice(
-        'Withdrawal submitted to Robinhood Lighter. The destination is the verified wallet bound to this account.',
+        'Withdrawal request accepted by Robinhood Lighter. Settlement is now pending; Claim USDG will unlock automatically when the on-chain pending balance becomes claimable.',
       );
+      void withdrawal.refreshClaim().catch(() => undefined);
     } catch (withdrawalError) {
       setWithdrawalNotice(
         withdrawalError instanceof Error
           ? withdrawalError.message
           : 'The withdrawal could not be submitted safely.',
       );
+    }
+  };
+
+  const handleWithdrawalClaim = async () => {
+    if (!withdrawal.claimReady || withdrawal.claimBusy) return;
+    setWithdrawalNotice('Claiming the settled USDG from Robinhood Lighter to your verified wallet…');
+    setWithdrawalClaimTxHash('');
+    try {
+      const result = await withdrawal.claim();
+      setWithdrawalClaimTxHash(result.txHash);
+      setWithdrawalNotice('Withdrawal complete. The claim transaction is confirmed and the USDG has been released to your verified wallet.');
+    } catch (claimError) {
+      setWithdrawalNotice(claimError instanceof Error ? claimError.message : 'The USDG claim could not be completed.');
     }
   };
 
@@ -376,11 +413,13 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
               {mode === 'deposit' ? (
                 <button className="account-transfer-submit" type="button" disabled={!depositReady} onClick={() => void handleDeposit()}>{account.busy ? 'Waiting for wallet / chain…' : !account.ownershipVerified ? 'Verify wallet to deposit' : 'Deposit USDG & onboard'}</button>
               ) : (
-                <button className="account-transfer-submit" type="button" disabled={!withdrawalReady} onClick={() => void handleWithdrawal()}>{withdrawal.busy ? 'Waiting for secure execution…' : !account.ownershipVerified ? 'Verify wallet to withdraw' : withdrawal.openPositions || (withdrawal.pendingOrderCount ?? 0) > 0 ? 'Close positions & cancel orders first' : !withdrawal.canSubmit ? 'Activate trading authority first' : 'Withdraw USDG'}</button>
+                <button className="account-transfer-submit" type="button" disabled={!withdrawalReady} onClick={() => void handleWithdrawal()}>{withdrawalBlockReason || 'Withdraw USDG'}</button>
               )}
               {mode === 'deposit' && depositNotice && <p className="account-transfer-notice" role="status">{depositNotice}{depositTxHash && <a href={`https://robinhoodchain.blockscout.com/tx/${depositTxHash}`} target="_blank" rel="noreferrer"> View transaction ↗</a>}</p>}
-              {mode === 'withdraw' && (withdrawalNotice || withdrawal.notice || withdrawal.error) && <p className="account-transfer-notice" role={withdrawal.error ? 'alert' : 'status'}>{withdrawal.error || withdrawalNotice || withdrawal.notice}{withdrawalTxHash && <small> Venue tx {shortAddress(withdrawalTxHash)}</small>}</p>}
-              <p className="account-transfer-warning">{mode === 'deposit' ? 'Aventa requests your persistent Robinhood Lighter deposit address, then your wallet transfers USDG directly to it on Robinhood Chain. Aventa never takes custody. Minimum deposit is 1 USDG; first-time wallets are onboarded by the venue and Aventa watches for the resulting Lighter account automatically.' : `Withdrawals use your encrypted user-owned Lighter key and require a fresh 30-second wallet authorization. USDG returns only to the verified wallet bound to this account. For margin safety, all positions must be closed and all orders cancelled first${withdrawal.minimumAmount ? `; venue minimum ${withdrawal.minimumAmount} USDG` : ''}.`}</p>
+              {mode === 'withdraw' && withdrawal.claimReady && <button className="account-transfer-submit" type="button" disabled={withdrawal.claimBusy || !account.ownershipVerified} onClick={() => void handleWithdrawalClaim()}>{withdrawal.claimBusy ? 'Confirming claim on Robinhood Chain…' : 'Claim pending USDG to wallet'}</button>}
+              {mode === 'withdraw' && withdrawal.claimReady && <p className="account-transfer-notice" role="status">Settlement ready. Lighter has placed USDG in the on-chain pending balance; claim it now or wait for the venue operator to settle it automatically.</p>}
+              {mode === 'withdraw' && (withdrawalNotice || withdrawal.notice || withdrawal.error || withdrawal.claimError) && <p className="account-transfer-notice" role={withdrawal.error || withdrawal.claimError ? 'alert' : 'status'}>{withdrawal.error || withdrawal.claimError || withdrawalNotice || withdrawal.notice}{withdrawalTxHash && <small> Venue tx {shortAddress(withdrawalTxHash)}</small>}{withdrawalClaimTxHash && <a href={`https://robinhoodchain.blockscout.com/tx/${withdrawalClaimTxHash}`} target="_blank" rel="noreferrer"> View claim transaction ↗</a>}</p>}
+              <p className="account-transfer-warning">{mode === 'deposit' ? 'Aventa requests your persistent Robinhood Lighter deposit address, then your wallet transfers USDG directly to it on Robinhood Chain. Aventa never takes custody. Minimum deposit is 1 USDG; first-time wallets are onboarded by the venue and Aventa watches for the resulting Lighter account automatically.' : `Withdrawals use your encrypted user-owned Lighter key and require a fresh 30-second wallet authorization. The request first leaves the Lighter perps balance, then settles into Robinhood Chain pending balance. When it is claimable, Aventa can call Lighter's withdrawPendingBalance for USDG asset index 3; the destination remains the verified wallet. All positions must be closed and all orders cancelled first${withdrawal.minimumAmount ? `; venue minimum ${withdrawal.minimumAmount} USDG` : ''}.`}</p>
             </div>
           )}
 

@@ -6,7 +6,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAventaAuth } from './useAventaAuth';
 import {
   AVENTA_TREASURY_ADDRESS,
+  ROBINHOOD_LIGHTER_PROXY,
+  ROBINHOOD_LIGHTER_WITHDRAWAL_ABI,
   ROBINHOOD_USDG_ADDRESS,
+  ROBINHOOD_USDG_ASSET_INDEX,
   ROBINHOOD_USDG_DECIMALS,
   USDG_ERC20_ABI,
 } from '../lib/lighter-robinhood';
@@ -38,6 +41,7 @@ type ProviderError = Error & {
 
 export const ROBINHOOD_CHAIN_ID = '0x1237';
 const ROBINHOOD_RPC_FALLBACK = 'https://rpc.mainnet.chain.robinhood.com';
+const UINT128_MAX = (BigInt(1) << BigInt(128)) - BigInt(1);
 
 function safeRobinhoodRpcUrl() {
   const value = process.env.NEXT_PUBLIC_ROBINHOOD_RPC_URL?.trim();
@@ -322,6 +326,10 @@ export function useRobinhoodAccount() {
   const [walletDisabled, setWalletDisabled] = useState(false);
   const [verifiedAddress, setVerifiedAddress] = useState('');
   const [verificationBusy, setVerificationBusy] = useState(false);
+  const [withdrawalClaimReady, setWithdrawalClaimReady] = useState(false);
+  const [withdrawalClaimBusy, setWithdrawalClaimBusy] = useState(false);
+  const [withdrawalClaimError, setWithdrawalClaimError] = useState('');
+  const withdrawalClaimGeneration = useRef(0);
   const requestGeneration = useRef(0);
   const ownershipRequestGeneration = useRef(0);
   const providerRef = useRef<Eip1193Provider | undefined>(undefined);
@@ -378,6 +386,38 @@ export function useRobinhoodAccount() {
       setError('Robinhood Chain did not return a balance snapshot. Retry in a moment.');
     }
   }, []);
+
+  const refreshWithdrawalClaim = useCallback(async (account = address) => {
+    const generation = ++withdrawalClaimGeneration.current;
+    if (!account || !isRobinhoodChain || !isAddress(account)) {
+      setWithdrawalClaimReady(false);
+      setWithdrawalClaimError('');
+      return false;
+    }
+
+    const claimData = encodeFunctionData({
+      abi: ROBINHOOD_LIGHTER_WITHDRAWAL_ABI,
+      functionName: 'withdrawPendingBalance',
+      args: [account as Address, ROBINHOOD_USDG_ASSET_INDEX, UINT128_MAX],
+    });
+    try {
+      const gas = await robinhoodReadRpc('eth_estimateGas', [{
+        from: account,
+        to: ROBINHOOD_LIGHTER_PROXY,
+        data: claimData,
+        value: '0x0',
+      }]);
+      const ready = typeof gas === 'string' && /^0x[a-fA-F0-9]+$/.test(gas) && BigInt(gas) > BigInt(0);
+      if (generation === withdrawalClaimGeneration.current) {
+        setWithdrawalClaimReady(ready);
+        if (ready) setWithdrawalClaimError('');
+      }
+      return ready;
+    } catch {
+      if (generation === withdrawalClaimGeneration.current) setWithdrawalClaimReady(false);
+      return false;
+    }
+  }, [address, isRobinhoodChain]);
 
   const refreshOwnershipVerification = useCallback(async (account: string) => {
     const generation = ++ownershipRequestGeneration.current;
@@ -585,6 +625,35 @@ export function useRobinhoodAccount() {
   }, [address, refreshBalances]);
 
   useEffect(() => {
+    if (!address || !isRobinhoodChain) {
+      withdrawalClaimGeneration.current += 1;
+      const resetTimer = window.setTimeout(() => {
+        setWithdrawalClaimReady(false);
+        setWithdrawalClaimError('');
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
+    }
+
+    const refreshClaim = () => {
+      if (document.visibilityState === 'visible') void refreshWithdrawalClaim(address);
+    };
+    const refreshTimer = window.setTimeout(refreshClaim, 0);
+    const interval = window.setInterval(refreshClaim, 8_000);
+    const handleWithdrawalSubmitted = () => {
+      window.setTimeout(refreshClaim, 1_500);
+      window.setTimeout(refreshClaim, 4_000);
+    };
+    window.addEventListener('aventa:withdrawal-submitted', handleWithdrawalSubmitted);
+    document.addEventListener('visibilitychange', refreshClaim);
+    return () => {
+      window.clearTimeout(refreshTimer);
+      window.clearInterval(interval);
+      window.removeEventListener('aventa:withdrawal-submitted', handleWithdrawalSubmitted);
+      document.removeEventListener('visibilitychange', refreshClaim);
+    };
+  }, [address, isRobinhoodChain, refreshWithdrawalClaim]);
+
+  useEffect(() => {
     if (!privy.authenticated || !address || !isRobinhoodChain) return;
     const refreshTimer = window.setTimeout(() => {
       void refreshOwnershipVerification(address).catch(() => undefined);
@@ -696,9 +765,93 @@ export function useRobinhoodAccount() {
     }
   }, [connectedWallet, resolveProvider, synchronize, verifyOwnershipWithProvider]);
 
+
+
+  const claimPendingWithdrawalUsdg = useCallback(async () => {
+    if (!address) throw new Error('Connect the wallet that owns this Lighter account before claiming USDG.');
+    if (!ownershipVerified) throw new Error('Verify wallet ownership before claiming a withdrawal.');
+
+    const ethBalance = assets.find((asset) => asset.symbol === 'ETH');
+    if (ethBalance?.status === 'live' && ethBalance.balance && Number(ethBalance.balance) <= 0) {
+      throw new Error('This wallet needs a small amount of ETH on Robinhood Chain for the claim transaction gas.');
+    }
+
+    setWithdrawalClaimBusy(true);
+    setWithdrawalClaimError('');
+    try {
+      let provider = await resolveProvider();
+      if (!provider) throw new Error('No EVM wallet was detected in this browser.');
+      if (isUnsupportedRobinhoodSmartWallet(connectedWallet)) {
+        throw new Error('This smart wallet does not support Robinhood Chain. Connect an EOA wallet such as Bitget, MetaMask, or Rabby.');
+      }
+
+      provider = await ensureRobinhoodChain(provider, connectedWallet);
+      providerRef.current = provider;
+      const accounts = await provider.request({ method: 'eth_accounts' });
+      const activeAccount = Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : '';
+      if (!activeAccount || activeAccount.toLowerCase() !== address.toLowerCase()) {
+        throw new Error('The active wallet account changed. Reconnect the verified wallet and try again.');
+      }
+
+      const claimData = encodeFunctionData({
+        abi: ROBINHOOD_LIGHTER_WITHDRAWAL_ABI,
+        functionName: 'withdrawPendingBalance',
+        args: [activeAccount as Address, ROBINHOOD_USDG_ASSET_INDEX, UINT128_MAX],
+      });
+      const request = {
+        from: activeAccount,
+        to: ROBINHOOD_LIGHTER_PROXY,
+        data: claimData,
+        value: '0x0',
+      };
+
+      let gas: unknown;
+      try {
+        gas = await robinhoodReadRpc('eth_estimateGas', [request]);
+      } catch {
+        await refreshBalances(activeAccount).catch(() => undefined);
+        setWithdrawalClaimReady(false);
+        throw new Error('This withdrawal is not claimable yet, or Lighter already settled it automatically. Refresh your wallet balance and try again if the USDG has not arrived.');
+      }
+      if (typeof gas !== 'string' || !/^0x[a-fA-F0-9]+$/.test(gas)) {
+        throw new Error('Robinhood Chain did not return a valid gas estimate for the withdrawal claim.');
+      }
+
+      let txHash: unknown;
+      try {
+        txHash = await provider.request({
+          method: 'eth_sendTransaction',
+          params: [{ ...request, gas: bufferedGas(gas) }],
+        });
+      } catch (claimError) {
+        throw new Error(`USDG withdrawal claim failed: ${providerMessage(claimError)}`);
+      }
+      if (typeof txHash !== 'string' || !/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+        throw new Error('The wallet did not return a valid withdrawal claim transaction hash.');
+      }
+
+      await waitForReceipt(txHash);
+      setWithdrawalClaimReady(false);
+      await refreshBalances(activeAccount);
+      window.dispatchEvent(new CustomEvent('aventa:withdrawal-claimed', {
+        detail: { address: activeAccount, txHash, asset: 'USDG', assetIndex: ROBINHOOD_USDG_ASSET_INDEX },
+      }));
+      return { txHash };
+    } catch (claimError) {
+      const message = providerMessage(claimError);
+      setWithdrawalClaimError(message);
+      throw new Error(message);
+    } finally {
+      setWithdrawalClaimBusy(false);
+    }
+  }, [address, assets, connectedWallet, ownershipVerified, refreshBalances, resolveProvider]);
+
   const refresh = useCallback(async () => {
-    if (address) await refreshBalances(address);
-  }, [address, refreshBalances]);
+    if (address) await Promise.all([
+      refreshBalances(address),
+      refreshWithdrawalClaim(address),
+    ]);
+  }, [address, refreshBalances, refreshWithdrawalClaim]);
 
   const signMessage = useCallback(async (message: string) => {
     const provider = await resolveProvider();
@@ -864,6 +1017,9 @@ export function useRobinhoodAccount() {
     setChainId('');
     setAssets(initialAssets());
     setUpdatedAt(undefined);
+    withdrawalClaimGeneration.current += 1;
+    setWithdrawalClaimReady(false);
+    setWithdrawalClaimError('');
     ownershipRequestGeneration.current += 1;
     setVerifiedAddress('');
     try {
@@ -880,17 +1036,22 @@ export function useRobinhoodAccount() {
     connect,
     disconnect,
     depositUsdg,
+    claimPendingWithdrawalUsdg,
     error,
     isRobinhoodChain,
     ownershipVerified,
     verificationBusy,
     refresh,
     refreshOwnershipVerification,
+    refreshWithdrawalClaim,
     signMessage,
     verifyOwnership,
     switchNetwork,
     updatedAt,
-  }), [address, assets, busy, connect, depositUsdg, disconnect, error, isRobinhoodChain, ownershipVerified, refresh, refreshOwnershipVerification, signMessage, switchNetwork, updatedAt, verificationBusy, verifyOwnership]);
+    withdrawalClaimBusy,
+    withdrawalClaimError,
+    withdrawalClaimReady,
+  }), [address, assets, busy, claimPendingWithdrawalUsdg, connect, depositUsdg, disconnect, error, isRobinhoodChain, ownershipVerified, refresh, refreshOwnershipVerification, refreshWithdrawalClaim, signMessage, switchNetwork, updatedAt, verificationBusy, verifyOwnership, withdrawalClaimBusy, withdrawalClaimError, withdrawalClaimReady]);
 }
 
 export type RobinhoodAccountState = ReturnType<typeof useRobinhoodAccount>;

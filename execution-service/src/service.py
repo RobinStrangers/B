@@ -1684,6 +1684,12 @@ class ExecutionService:
                 "amount": format(withdrawal.amount, "f"),
                 "route": "PERP",
                 "destinationWallet": str(profile["walletAddress"]),
+                "settlement": {
+                    "status": "PENDING_ONCHAIN_SETTLEMENT",
+                    "assetIndex": state.asset.asset_id,
+                    "claimMethod": "withdrawPendingBalance",
+                    "claimRequiredWhenClaimable": True,
+                },
                 **submission.public(),
             }
 

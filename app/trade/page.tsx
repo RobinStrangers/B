@@ -809,13 +809,23 @@ export default function Home() {
       await execution.refresh();
       throw new Error('Wallet ownership is verified. Review the withdrawal and submit again.');
     }
-    return execution.execute(
+    const result = await execution.execute(
       'withdraw',
       '/api/execution/withdrawals',
       { amount },
       wallet.address,
       wallet.signMessage,
     );
+    window.dispatchEvent(new CustomEvent('aventa:withdrawal-submitted', {
+      detail: { address: wallet.address, amount, asset: 'USDG' },
+    }));
+    void wallet.refreshWithdrawalClaim().catch(() => undefined);
+    return result;
+  }, [execution, wallet]);
+  const claimWithdrawal = useCallback(async () => {
+    const result = await wallet.claimPendingWithdrawalUsdg();
+    await execution.refresh().catch(() => undefined);
+    return result;
   }, [execution, wallet]);
   const referenceFunding = cryptoDetail.fundingRate !== undefined ? cryptoDetail.fundingRate * 100 : undefined;
   const nextFundingLabel = cryptoDetail.nextFunding ? new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }).format(cryptoDetail.nextFunding) : 'Loading…';
@@ -1032,6 +1042,11 @@ export default function Home() {
           notice: execution.notice,
           error: execution.error,
           submit: withdrawUsdG,
+          claimReady: wallet.withdrawalClaimReady,
+          claimBusy: wallet.withdrawalClaimBusy,
+          claimError: wallet.withdrawalClaimError,
+          refreshClaim: wallet.refreshWithdrawalClaim,
+          claim: claimWithdrawal,
         }}
         open={accountOpen}
         onClose={closeAccountDrawer}
