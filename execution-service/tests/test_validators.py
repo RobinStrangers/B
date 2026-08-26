@@ -1,7 +1,13 @@
 import unittest
 
 from errors import ServiceError
-from validators import parse_cancel, parse_close, parse_order, reject_forbidden_keys
+from validators import (
+    parse_cancel,
+    parse_close,
+    parse_order,
+    parse_withdrawal,
+    reject_forbidden_keys,
+)
 
 
 class ValidatorTests(unittest.TestCase):
@@ -66,6 +72,17 @@ class ValidatorTests(unittest.TestCase):
     def test_close_never_accepts_position_size(self) -> None:
         with self.assertRaises(ServiceError):
             parse_close({"marketSymbol": "ETH", "positionSize": "1"})
+
+    def test_withdrawal_accepts_only_a_positive_amount(self) -> None:
+        self.assertEqual(str(parse_withdrawal({"amount": "12.345"}).amount), "12.345")
+        for body in (
+            {"amount": "0"},
+            {"amount": "-1"},
+            {"amount": "1", "destination": "0x" + "11" * 20},
+            {"amount": "1", "assetId": 3},
+        ):
+            with self.subTest(body=body), self.assertRaises(ServiceError):
+                parse_withdrawal(body)
 
 
 if __name__ == "__main__":

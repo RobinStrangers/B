@@ -252,6 +252,24 @@ def parse_close(body: dict[str, Any]) -> CloseInput:
 
 
 @dataclass(frozen=True)
+class WithdrawalInput:
+    amount: Decimal
+
+
+def parse_withdrawal(body: dict[str, Any]) -> WithdrawalInput:
+    # Asset, route, account, and destination are deliberately server-controlled.
+    # The authenticated wallet receives USDG from its own perps account.
+    _exact_keys(body, {"amount"}, {"amount"})
+    amount = _decimal(body["amount"], "amount")
+    if amount <= 0 or amount > Decimal("1000000000"):
+        raise _fail(
+            "WITHDRAWAL_AMOUNT_INVALID",
+            "amount must be greater than 0 and at most 1000000000 USDG",
+        )
+    return WithdrawalInput(amount)
+
+
+@dataclass(frozen=True)
 class CompletionInput:
     challenge_id: str
     signature: str

@@ -7,10 +7,27 @@ import { executionAuthorizationMessage } from '../lib/execution-authorization';
 export type ExecutionGate = { id: string; label: string; ready: boolean; detail?: string };
 export type ExecutionAccountChoice = { index: number; label: string; kind?: string };
 export type ExecutionActivity = {
+  account?: {
+    index?: number;
+    availableBalance: string;
+    collateral: string;
+    portfolioValue: string;
+    pendingOrderCount: number;
+  };
   positions: Array<Record<string, unknown>>;
   openOrders: Array<Record<string, unknown>>;
   orderHistory: Array<Record<string, unknown>>;
   tradeHistory: Array<Record<string, unknown>>;
+  withdrawalHistory: Array<Record<string, unknown>>;
+};
+export type ExecutionWithdrawalReadiness = {
+  asset: 'USDG';
+  route: 'PERP';
+  destinationWallet?: string;
+  availableBalance: string;
+  minimumAmount?: string;
+  openPositions?: boolean;
+  pendingOrderCount?: number;
 };
 export type ExecutionReadiness = {
   mode: 'off' | 'paper' | 'canary' | 'limited_live';
@@ -22,12 +39,19 @@ export type ExecutionReadiness = {
   canSubmit: boolean;
   canCancel: boolean;
   canClose: boolean;
+  canWithdraw: boolean;
+  withdrawal: ExecutionWithdrawalReadiness;
   accountIndex?: number;
   message: string;
   gates: ExecutionGate[];
 };
 
-const EMPTY_ACTIVITY: ExecutionActivity = { positions: [], openOrders: [], orderHistory: [], tradeHistory: [] };
+const EMPTY_ACTIVITY: ExecutionActivity = { positions: [], openOrders: [], orderHistory: [], tradeHistory: [], withdrawalHistory: [] };
+const EMPTY_WITHDRAWAL: ExecutionWithdrawalReadiness = {
+  asset: 'USDG',
+  route: 'PERP',
+  availableBalance: '0',
+};
 const INITIAL_READINESS: ExecutionReadiness = {
   mode: 'off',
   serviceReady: false,
@@ -38,6 +62,8 @@ const INITIAL_READINESS: ExecutionReadiness = {
   canSubmit: false,
   canCancel: false,
   canClose: false,
+  canWithdraw: false,
+  withdrawal: EMPTY_WITHDRAWAL,
   message: 'Checking isolated signer readiness…',
   gates: [],
 };
@@ -68,6 +94,16 @@ function normalizeReadiness(payload: unknown): ExecutionReadiness {
     { id: 'nonce', label: 'Execution nonce lane is ready', ready: nonceLane?.state === 'READY', detail: typeof nonceLane?.state === 'string' ? nonceLane.state : undefined },
   ];
   const canSubmit = root?.canOpen === true && marketExecutable;
+  const rawWithdrawal = record(root?.withdrawal);
+  const withdrawal: ExecutionWithdrawalReadiness = {
+    asset: 'USDG',
+    route: 'PERP',
+    destinationWallet: typeof rawWithdrawal?.destinationWallet === 'string' ? rawWithdrawal.destinationWallet : undefined,
+    availableBalance: typeof rawWithdrawal?.availableBalance === 'string' ? rawWithdrawal.availableBalance : '0',
+    minimumAmount: typeof rawWithdrawal?.minimumAmount === 'string' ? rawWithdrawal.minimumAmount : undefined,
+    openPositions: typeof rawWithdrawal?.openPositions === 'boolean' ? rawWithdrawal.openPositions : undefined,
+    pendingOrderCount: typeof rawWithdrawal?.pendingOrderCount === 'number' ? rawWithdrawal.pendingOrderCount : undefined,
+  };
   const message = typeof root?.message === 'string'
     ? root.message
     : mode === 'off'
@@ -87,6 +123,8 @@ function normalizeReadiness(payload: unknown): ExecutionReadiness {
     canSubmit,
     canCancel: root?.canCancel === true,
     canClose: root?.canClose === true,
+    canWithdraw: root?.canWithdraw === true,
+    withdrawal,
     accountIndex: typeof root?.accountIndex === 'number' ? root.accountIndex : undefined,
     message,
     gates,
@@ -107,11 +145,23 @@ function normalizeActivity(payload: unknown): ExecutionActivity {
       return row ? [row] : [];
     })
     : [];
+  const rawAccount = record(root?.account);
+  const account = rawAccount && typeof rawAccount.availableBalance === 'string'
+    ? {
+      index: typeof rawAccount.index === 'number' ? rawAccount.index : undefined,
+      availableBalance: rawAccount.availableBalance,
+      collateral: typeof rawAccount.collateral === 'string' ? rawAccount.collateral : '0',
+      portfolioValue: typeof rawAccount.portfolioValue === 'string' ? rawAccount.portfolioValue : '0',
+      pendingOrderCount: typeof rawAccount.pendingOrderCount === 'number' ? rawAccount.pendingOrderCount : 0,
+    }
+    : undefined;
   return {
+    account,
     positions: rows('positions'),
     openOrders: rows('openOrders'),
     orderHistory: rows('orderHistory').length ? rows('orderHistory') : requests,
     tradeHistory: rows('tradeHistory'),
+    withdrawalHistory: rows('withdrawalHistory'),
   };
 }
 
@@ -276,7 +326,7 @@ export function useAventaExecution(marketId: string) {
   }, [post, refresh]);
 
   const authorizedMutation = useCallback(async (
-    action: 'order' | 'cancel' | 'cancel-all' | 'close',
+    action: 'order' | 'cancel' | 'cancel-all' | 'close' | 'withdraw',
     path: string,
     payload: Record<string, unknown>,
     walletAddress: string,
@@ -295,7 +345,7 @@ export function useAventaExecution(marketId: string) {
   }, [post]);
 
   const execute = useCallback(async (
-    action: 'order' | 'cancel' | 'cancel-all' | 'close',
+    action: 'order' | 'cancel' | 'cancel-all' | 'close' | 'withdraw',
     path: string,
     payload: Record<string, unknown>,
     walletAddress: string,

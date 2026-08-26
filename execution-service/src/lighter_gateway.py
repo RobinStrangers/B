@@ -107,6 +107,34 @@ class VenuePosition:
 
 
 @dataclass(frozen=True)
+class VenueAsset:
+    symbol: str
+    asset_id: int
+    decimals: int
+    min_withdrawal_amount: Decimal
+
+    def amount_units(self, amount: Decimal) -> int:
+        scaled = amount * (Decimal(10) ** self.decimals)
+        if scaled != scaled.to_integral_value():
+            raise ServiceError(
+                "WITHDRAWAL_PRECISION_INVALID",
+                f"{self.symbol} withdrawals support at most {self.decimals} decimals",
+            )
+        units = int(scaled)
+        if units <= 0 or units > (1 << 63) - 1:
+            raise ServiceError("WITHDRAWAL_AMOUNT_INVALID", "Withdrawal amount is invalid")
+        return units
+
+
+@dataclass(frozen=True)
+class VenueWithdrawalState:
+    asset: VenueAsset
+    available_balance: Decimal
+    has_open_positions: bool
+    pending_order_count: int
+
+
+@dataclass(frozen=True)
 class Submission:
     tx_hash: str | None
     code: int
@@ -378,6 +406,137 @@ class LighterGateway:
         finally:
             await client.close()
 
+    async def withdrawal_asset(self, symbol: str = "USDG") -> VenueAsset:
+        """Resolve withdrawal metadata from this exact venue deployment."""
+        lighter, client = await self._api_client()
+        try:
+            response = await lighter.OrderApi(client).asset_details(_request_timeout=8.0)
+            data = _model_dict(response)
+            for raw in _first_list(data, "asset_details", "assetDetails", "assets"):
+                asset = _model_dict(raw)
+                if str(asset.get("symbol", "")).strip().upper() != symbol.upper():
+                    continue
+                decimals = _integer(asset.get("decimals"), "asset decimals")
+                if decimals < 0 or decimals > 18:
+                    raise VenueRejected(
+                        "Venue asset precision is invalid",
+                        code="VENUE_RESPONSE_INVALID",
+                    )
+                minimum = _decimal(
+                    asset.get("min_withdrawal_amount", asset.get("minWithdrawalAmount")),
+                    "minimum withdrawal amount",
+                )
+                if minimum < 0:
+                    raise VenueRejected(
+                        "Venue withdrawal minimum is invalid",
+                        code="VENUE_RESPONSE_INVALID",
+                    )
+                return VenueAsset(
+                    symbol=symbol.upper(),
+                    asset_id=_integer(asset.get("asset_id", asset.get("assetId")), "asset id"),
+                    decimals=decimals,
+                    min_withdrawal_amount=minimum,
+                )
+            raise ServiceError(
+                "WITHDRAWAL_ASSET_UNAVAILABLE",
+                f"{symbol.upper()} is not withdrawable on this venue deployment",
+                http_status=423,
+            )
+        finally:
+            await client.close()
+
+    async def withdrawal_state(
+        self,
+        account_index: int,
+        symbol: str = "USDG",
+    ) -> VenueWithdrawalState:
+        """Read the balance and exposure gates used immediately before withdrawal."""
+        lighter, client = await self._api_client()
+        try:
+            account_result, assets_result = await asyncio.gather(
+                lighter.AccountApi(client).account(
+                    by="index",
+                    value=str(account_index),
+                    active_only=True,
+                    _request_timeout=8.0,
+                ),
+                lighter.OrderApi(client).asset_details(_request_timeout=8.0),
+            )
+            account_data = _model_dict(account_result)
+            accounts = _first_list(account_data, "accounts", "sub_accounts")
+            if len(accounts) != 1:
+                raise VenueRejected(
+                    "Venue withdrawal account is unavailable",
+                    code="WITHDRAWAL_ACCOUNT_UNAVAILABLE",
+                )
+            account = _model_dict(accounts[0])
+            asset_data = _model_dict(assets_result)
+            resolved_asset = None
+            for raw in _first_list(asset_data, "asset_details", "assetDetails", "assets"):
+                candidate = _model_dict(raw)
+                if str(candidate.get("symbol", "")).strip().upper() != symbol.upper():
+                    continue
+                decimals = _integer(candidate.get("decimals"), "asset decimals")
+                minimum = _decimal(
+                    candidate.get(
+                        "min_withdrawal_amount",
+                        candidate.get("minWithdrawalAmount"),
+                    ),
+                    "minimum withdrawal amount",
+                )
+                if decimals < 0 or decimals > 18 or minimum < 0:
+                    raise VenueRejected(
+                        "Venue withdrawal metadata is invalid",
+                        code="VENUE_RESPONSE_INVALID",
+                    )
+                resolved_asset = VenueAsset(
+                    symbol=symbol.upper(),
+                    asset_id=_integer(
+                        candidate.get("asset_id", candidate.get("assetId")),
+                        "asset id",
+                    ),
+                    decimals=decimals,
+                    min_withdrawal_amount=minimum,
+                )
+                break
+            if resolved_asset is None:
+                raise ServiceError(
+                    "WITHDRAWAL_ASSET_UNAVAILABLE",
+                    f"{symbol.upper()} is not withdrawable on this venue deployment",
+                    http_status=423,
+                )
+            available = _decimal(
+                account.get("available_balance", account.get("availableBalance", "0")),
+                "available balance",
+            )
+            has_positions = False
+            for raw in _first_list(account, "positions"):
+                position = _model_dict(raw)
+                amount = abs(
+                    _decimal(
+                        position.get(
+                            "position",
+                            position.get("size", position.get("base_amount", "0")),
+                        ),
+                        "position size",
+                    )
+                )
+                if amount > 0:
+                    has_positions = True
+                    break
+            pending_orders = _integer(
+                account.get("pending_order_count", account.get("pendingOrderCount", 0)),
+                "pending order count",
+            )
+            return VenueWithdrawalState(
+                asset=resolved_asset,
+                available_balance=max(Decimal(0), available),
+                has_open_positions=has_positions,
+                pending_order_count=max(0, pending_orders),
+            )
+        finally:
+            await client.close()
+
     async def position(self, account_index: int, market: VenueMarket) -> VenuePosition:
         lighter, client = await self._api_client()
         try:
@@ -444,7 +603,7 @@ class LighterGateway:
         private_key: str,
         *,
         limit: int,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, Any]:
         """Read the account's authoritative private orders and fills."""
         lighter = self._lighter()
         client = self.signer(account_index, api_key_index, private_key)
@@ -459,7 +618,13 @@ class LighterGateway:
                     "Private venue activity authorization failed",
                     http_status=503,
                 )
-            account_result, active_result, inactive_result, trades_result, markets_result = await asyncio.gather(
+            (
+                account_result,
+                active_result,
+                inactive_result,
+                trades_result,
+                markets_result,
+            ) = await asyncio.gather(
                 lighter.AccountApi(client.api_client).account(
                     by="index",
                     value=str(account_index),
@@ -487,6 +652,23 @@ class LighterGateway:
                 ),
                 client.order_api.order_book_details(filter="perp", _request_timeout=8.0),
             )
+            try:
+                withdrawals_result = await client.tx_api.withdraw_history(
+                    authorization=authorization,
+                    account_index=account_index,
+                    _request_timeout=8.0,
+                )
+                withdrawals = _first_list(
+                    _model_dict(withdrawals_result),
+                    "withdraws",
+                    "withdrawals",
+                    "items",
+                    "data",
+                )
+            except Exception:
+                # A delayed bridge-history endpoint must not hide positions,
+                # orders, or fills from the user.
+                withdrawals = []
             market_data = _model_dict(markets_result)
             symbols: dict[int, str] = {}
             for raw in _first_list(market_data, "order_book_details", "orderBookDetails", "markets"):
@@ -498,15 +680,34 @@ class LighterGateway:
 
             account_data = _model_dict(account_result)
             accounts = _first_list(account_data, "accounts", "sub_accounts")
-            positions = _first_list(_model_dict(accounts[0]), "positions") if len(accounts) == 1 else []
+            account = _model_dict(accounts[0]) if len(accounts) == 1 else {}
+            positions = _first_list(account, "positions")
             active = _first_list(_model_dict(active_result), "orders", "data")
             inactive = _first_list(_model_dict(inactive_result), "orders", "data")
             trades = _first_list(_model_dict(trades_result), "trades", "data")
             return {
+                "account": {
+                    "index": _integer(
+                        account.get("index", account.get("account_index", account_index)),
+                        "account index",
+                    ),
+                    "availableBalance": str(
+                        account.get("available_balance", account.get("availableBalance", "0"))
+                    ),
+                    "collateral": str(account.get("collateral", "0")),
+                    "portfolioValue": str(
+                        account.get("total_asset_value", account.get("collateral", "0"))
+                    ),
+                    "pendingOrderCount": _integer(
+                        account.get("pending_order_count", account.get("pendingOrderCount", 0)),
+                        "pending order count",
+                    ),
+                },
                 "positions": [self._activity_row(row, symbols) for row in positions],
                 "openOrders": [self._activity_row(row, symbols) for row in active],
                 "orderHistory": [self._activity_row(row, symbols) for row in inactive],
                 "tradeHistory": [self._activity_row(row, symbols) for row in trades],
+                "withdrawalHistory": [_model_dict(row) for row in withdrawals],
             }
         except ServiceError:
             raise
@@ -536,6 +737,32 @@ class LighterGateway:
         finally:
             await client.close()
 
+    async def transaction(self, tx_hash: str) -> dict[str, Any] | None:
+        """Return authoritative transaction data, or None while it is not indexed."""
+        lighter, client = await self._api_client()
+        try:
+            response = await lighter.TransactionApi(client).tx(
+                by="hash",
+                value=tx_hash,
+                _request_timeout=8.0,
+            )
+            data = _model_dict(response)
+            if _integer(data.get("code", 200), "response code") != 200:
+                return None
+            returned_hash = str(data.get("hash", ""))
+            if returned_hash.lower() != tx_hash.lower():
+                return None
+            return data
+        except ServiceError:
+            raise
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            if status in {400, 404}:
+                return None
+            raise VenueAmbiguous("Venue transaction lookup is temporarily unavailable") from exc
+        finally:
+            await client.close()
+
     def generate_api_key(self) -> tuple[str, str]:
         lighter = self._lighter()
         private_key, public_key, error = lighter.create_api_key()
@@ -545,12 +772,20 @@ class LighterGateway:
 
     def signer(self, account_index: int, api_key_index: int, private_key: str) -> Any:
         lighter = self._lighter()
-        return lighter.SignerClient(
-            url=self.api_url,
-            account_index=account_index,
-            api_private_keys={api_key_index: private_key},
-            chain_id=LIGHTER_CHAIN_ID,
-        )
+        try:
+            return lighter.SignerClient(
+                url=self.api_url,
+                account_index=account_index,
+                api_private_keys={api_key_index: private_key},
+                chain_id=LIGHTER_CHAIN_ID,
+            )
+        except Exception as exc:
+            raise ServiceError(
+                "SIGNER_INITIALIZATION_FAILED",
+                "The isolated execution signer could not be initialized",
+                http_status=503,
+                retryable=True,
+            ) from exc
 
     @staticmethod
     def _decode_l1_result(result: Any) -> tuple[int, str, str | None, str]:
@@ -691,6 +926,39 @@ class LighterGateway:
             _integer(predicted, "predicted execution time") if predicted is not None else None,
         )
 
+    async def _send_signed(
+        self,
+        client: Any,
+        signed: tuple[Any, Any, Any, Any],
+        *,
+        ambiguous_message: str,
+    ) -> Submission:
+        tx_type, tx_info, signed_tx_hash, error = signed
+        if error:
+            raise VenueRejected(str(error))
+        if tx_type is None or not isinstance(tx_info, str) or not tx_info or not signed_tx_hash:
+            raise VenueRejected(
+                "Signer returned invalid transaction material",
+                code="SIGNER_RESPONSE_INVALID",
+            )
+        try:
+            response = await client.send_tx(tx_type=tx_type, tx_info=tx_info)
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                raise VenueRejected("Venue rejected the transaction") from exc
+            raise VenueAmbiguous(
+                ambiguous_message,
+                signed_tx_hash=str(signed_tx_hash),
+            ) from exc
+        try:
+            return self._submission(response)
+        except VenueAmbiguous as exc:
+            raise VenueAmbiguous(
+                exc.message,
+                signed_tx_hash=str(signed_tx_hash),
+            ) from exc
+
     async def update_leverage(
         self,
         client: Any,
@@ -701,20 +969,25 @@ class LighterGateway:
         api_key_index: int,
     ) -> Submission:
         try:
-            _, response, error = await client.update_leverage(
+            signed = client.sign_update_leverage(
                 market.market_index,
+                int(10_000 / leverage),
                 client.CROSS_MARGIN_MODE if margin_mode == "CROSS" else client.ISOLATED_MARGIN_MODE,
-                leverage,
                 nonce=nonce,
                 api_key_index=api_key_index,
             )
-            if error:
-                raise VenueRejected(error)
-            return self._submission(response)
-        except VenueRejected:
-            raise
         except Exception as exc:
-            raise VenueAmbiguous("Leverage update outcome is unknown") from exc
+            raise ServiceError(
+                "SIGNING_FAILED",
+                "Leverage transaction could not be signed",
+                http_status=503,
+                retryable=True,
+            ) from exc
+        return await self._send_signed(
+            client,
+            signed,
+            ambiguous_message="Leverage update outcome is unknown",
+        )
 
     async def submit_order(
         self,
@@ -739,7 +1012,7 @@ class LighterGateway:
         )
         expiry = client.DEFAULT_IOC_EXPIRY if order_type == "MARKET" else client.DEFAULT_28_DAY_ORDER_EXPIRY
         try:
-            _, response, error = await client.create_order(
+            signed = client.sign_create_order(
                 market.market_index,
                 client_order_index,
                 base_ticks,
@@ -755,13 +1028,18 @@ class LighterGateway:
                 nonce=nonce,
                 api_key_index=api_key_index,
             )
-            if error:
-                raise VenueRejected(error)
-            return self._submission(response)
-        except VenueRejected:
-            raise
         except Exception as exc:
-            raise VenueAmbiguous() from exc
+            raise ServiceError(
+                "SIGNING_FAILED",
+                "Order transaction could not be signed",
+                http_status=503,
+                retryable=True,
+            ) from exc
+        return await self._send_signed(
+            client,
+            signed,
+            ambiguous_message="Order submission outcome is unknown",
+        )
 
     async def cancel_order(
         self,
@@ -772,19 +1050,24 @@ class LighterGateway:
         api_key_index: int,
     ) -> Submission:
         try:
-            _, response, error = await client.cancel_order(
+            signed = client.sign_cancel_order(
                 market_index,
                 order_id,
                 nonce=nonce,
                 api_key_index=api_key_index,
             )
-            if error:
-                raise VenueRejected(error)
-            return self._submission(response)
-        except VenueRejected:
-            raise
         except Exception as exc:
-            raise VenueAmbiguous("Cancel outcome is unknown") from exc
+            raise ServiceError(
+                "SIGNING_FAILED",
+                "Cancel transaction could not be signed",
+                http_status=503,
+                retryable=True,
+            ) from exc
+        return await self._send_signed(
+            client,
+            signed,
+            ambiguous_message="Cancel outcome is unknown",
+        )
 
     async def cancel_all(
         self,
@@ -794,20 +1077,55 @@ class LighterGateway:
         api_key_index: int,
     ) -> Submission:
         try:
-            _, response, error = await client.cancel_all_orders(
+            signed = client.sign_cancel_all_orders(
                 client.CANCEL_ALL_TIF_IMMEDIATE,
                 int(time.time() * 1000),
                 cancel_all_market_index=market_index,
                 nonce=nonce,
                 api_key_index=api_key_index,
             )
-            if error:
-                raise VenueRejected(error)
-            return self._submission(response)
-        except VenueRejected:
-            raise
         except Exception as exc:
-            raise VenueAmbiguous("Cancel-all outcome is unknown") from exc
+            raise ServiceError(
+                "SIGNING_FAILED",
+                "Cancel-all transaction could not be signed",
+                http_status=503,
+                retryable=True,
+            ) from exc
+        return await self._send_signed(
+            client,
+            signed,
+            ambiguous_message="Cancel-all outcome is unknown",
+        )
+
+    async def withdraw(
+        self,
+        client: Any,
+        asset: VenueAsset,
+        amount: Decimal,
+        nonce: int,
+        api_key_index: int,
+    ) -> Submission:
+        amount_units = asset.amount_units(amount)
+        try:
+            signed = client.sign_withdraw(
+                asset.asset_id,
+                client.ROUTE_PERP,
+                amount_units,
+                nonce=nonce,
+                api_key_index=api_key_index,
+            )
+        except Exception as exc:
+            raise ServiceError(
+                "SIGNING_FAILED",
+                "Withdrawal transaction could not be signed",
+                http_status=503,
+                retryable=True,
+            ) from exc
+        return await self._send_signed(
+            client,
+            signed,
+            ambiguous_message="Withdrawal outcome is unknown",
+        )
 
     @staticmethod
     def order_amounts(

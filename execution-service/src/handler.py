@@ -140,7 +140,7 @@ async def _dispatch(event: dict[str, Any]) -> ServiceResult:
     if method == "GET" and path.startswith("/v1/requests/"):
         context = _identity(event, mutation=False)
         requested_id = validate_request_id(path.removeprefix("/v1/requests/"))
-        return service.request_status(context, requested_id)
+        return await service.request_status(context, requested_id)
 
     if method != "POST":
         raise ServiceError("ROUTE_NOT_FOUND", "Execution route was not found", http_status=404)
@@ -157,6 +157,7 @@ async def _dispatch(event: dict[str, Any]) -> ServiceResult:
         "/v1/orders/cancel": service.cancel_order,
         "/v1/orders/cancel-all": service.cancel_all,
         "/v1/positions/close": service.close_position,
+        "/v1/withdrawals": service.withdraw,
     }
     route = routes.get(path)
     if route is None:

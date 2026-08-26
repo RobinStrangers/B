@@ -27,11 +27,19 @@ class VenueRejected(ServiceError):
 class VenueAmbiguous(ServiceError):
     """The signer cannot prove whether the venue accepted the transaction."""
 
-    def __init__(self, message: str = "Venue submission outcome is unknown") -> None:
+    def __init__(
+        self,
+        message: str = "Venue submission outcome is unknown",
+        *,
+        signed_tx_hash: str | None = None,
+    ) -> None:
         super().__init__(
             "VENUE_OUTCOME_UNKNOWN",
             message,
             http_status=202,
             retryable=False,
         )
-
+        # A signed transaction hash is safe reconciliation material. It is not
+        # returned to the browser until the venue has proven that it accepted
+        # the transaction.
+        self.signed_tx_hash = signed_tx_hash

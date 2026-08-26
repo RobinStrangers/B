@@ -39,6 +39,7 @@ from validators import (
     parse_empty,
     parse_key_prepare,
     parse_order,
+    parse_withdrawal,
 )
 
 
@@ -60,6 +61,7 @@ class ServiceResult:
 
 Work = Callable[[], Awaitable[tuple[str, dict[str, Any]]]]
 Preflight = Callable[[], None]
+RECONCILIATION_DELAY_MS = 30_000
 
 
 class ExecutionService:
@@ -99,6 +101,7 @@ class ExecutionService:
         *,
         hash_body: dict[str, Any] | None = None,
         preflight: Preflight | None = None,
+        reconciliation: dict[str, Any] | None = None,
     ) -> ServiceResult:
         if context.request_id is None:
             raise ServiceError("REQUEST_ID_REQUIRED", "Idempotency request id is required")
@@ -110,6 +113,27 @@ class ExecutionService:
         )
         if not created:
             status = str(item.get("status", "PENDING"))
+            if status == "UNKNOWN":
+                try:
+                    await self._reconcile_unknown_requests(
+                        context,
+                        request_id=context.request_id,
+                    )
+                    refreshed = self.repo.get_request(
+                        context.subject_hash,
+                        context.request_id,
+                    )
+                    if refreshed is not None:
+                        item = refreshed
+                        status = str(item.get("status", "PENDING"))
+                except Exception:
+                    logger.exception(
+                        "Idempotent retry reconciliation failed closed",
+                        extra={
+                            "subject_hash": context.subject_hash,
+                            "request_id": context.request_id,
+                        },
+                    )
             code = 202 if status in {"PENDING", "SUBMITTED", "UNKNOWN"} else 200
             if status in {"FAILED", "BLOCKED"}:
                 code = 409
@@ -132,6 +156,10 @@ class ExecutionService:
             )
             return ServiceResult(202 if state == "SUBMITTED" else 200, public)
         except VenueAmbiguous as exc:
+            reconciliation_record = dict(reconciliation or {})
+            reconciliation_record["ambiguousAt"] = int(time.time() * 1000)
+            if exc.signed_tx_hash:
+                reconciliation_record["signedTxHash"] = exc.signed_tx_hash
             public = {
                 "requestId": context.request_id.lower(),
                 "operation": operation,
@@ -146,6 +174,7 @@ class ExecutionService:
                 "UNKNOWN",
                 response=public,
                 error_code=exc.code,
+                reconciliation=reconciliation_record or None,
             )
             return ServiceResult(202, public)
         except ServiceError as exc:
@@ -187,6 +216,108 @@ class ExecutionService:
                 error_code="INTERNAL_OUTCOME_UNKNOWN",
             )
             return ServiceResult(202, public)
+
+    async def _reconcile_unknown_requests(
+        self,
+        context: RequestContext,
+        profile: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> None:
+        """Resolve quarantined signer lanes from venue tx or nonce evidence."""
+        profile = profile or self.repo.get_profile(context.subject_hash)
+        if (
+            profile is None
+            or str(profile.get("walletAddress", "")).lower() != context.wallet_address.lower()
+            or profile.get("keyStatus") != "ACTIVE"
+        ):
+            return
+        account_index = int(profile["accountIndex"])
+        api_key_index = int(profile["apiKeyIndex"])
+        if request_id is not None:
+            candidate = self.repo.get_request(context.subject_hash, request_id)
+            candidates = [candidate] if candidate else []
+        else:
+            candidates = self.repo.list_requests(context.subject_hash, limit=100)
+        now_ms = int(time.time() * 1000)
+        for item in candidates:
+            if not item or item.get("status") != "UNKNOWN":
+                continue
+            details = item.get("reconciliation")
+            if not isinstance(details, dict):
+                continue
+            try:
+                if int(details.get("accountIndex", -1)) != account_index:
+                    continue
+                if int(details.get("apiKeyIndex", -1)) != api_key_index:
+                    continue
+                attempted_nonce = int(details["attemptedNonce"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            stage = str(details.get("stage", "")).upper()
+            signed_tx_hash = details.get("signedTxHash")
+            accepted = False
+            if isinstance(signed_tx_hash, str) and signed_tx_hash:
+                try:
+                    transaction = await self.gateway.transaction(signed_tx_hash)
+                except Exception:
+                    transaction = None
+                if transaction is not None:
+                    try:
+                        accepted = (
+                            int(transaction.get("account_index", -1)) == account_index
+                            and int(transaction.get("api_key_index", -1)) == api_key_index
+                            and int(transaction.get("nonce", -1)) == attempted_nonce
+                        )
+                    except (TypeError, ValueError):
+                        accepted = False
+            if not accepted:
+                ambiguous_at = int(details.get("ambiguousAt", item.get("updatedAt", now_ms)))
+                if now_ms - ambiguous_at < RECONCILIATION_DELAY_MS:
+                    continue
+                try:
+                    accepted = await self.gateway.next_nonce(account_index, api_key_index) > attempted_nonce
+                except Exception:
+                    continue
+
+            original = self._public_request(item)
+            if accepted and stage != "LEVERAGE":
+                state = "SUBMITTED"
+                message = "Venue acceptance was recovered automatically from signed transaction evidence."
+            elif accepted:
+                state = "FAILED"
+                message = (
+                    "The leverage update was accepted, but the order was not submitted. "
+                    "It is safe to review and submit a new order."
+                )
+            else:
+                state = "FAILED"
+                message = "The venue did not consume this transaction nonce; it is safe to retry."
+            public = {
+                **original,
+                "status": state,
+                "message": message,
+                "reconciled": True,
+                "retryable": state == "FAILED",
+            }
+            public.pop("errorCode", None)
+            if accepted and isinstance(signed_tx_hash, str) and signed_tx_hash:
+                public["venueTxHash"] = signed_tx_hash
+            request_key = str(item.get("requestId", ""))
+            if not request_key:
+                continue
+            self.repo.update_request(
+                context.subject_hash,
+                request_key,
+                state,
+                response=public,
+                clear_reconciliation=True,
+            )
+            self.repo.release_nonce_lease(
+                account_index,
+                api_key_index,
+                f"request:{request_key.lower()}",
+            )
 
     def _profile(self, context: RequestContext, *, require_integrator: bool = False) -> dict[str, Any]:
         profile = self.repo.get_profile(context.subject_hash)
@@ -436,6 +567,14 @@ class ExecutionService:
                     )
             except Exception:
                 key_active = False
+        if key_active and profile_bound and profile:
+            try:
+                await self._reconcile_unknown_requests(context, profile)
+            except Exception:
+                logger.exception(
+                    "Automatic execution reconciliation failed closed",
+                    extra={"subject_hash": context.subject_hash},
+                )
         try:
             treasury_ready = await self._treasury_ready()
         except Exception:
@@ -481,6 +620,15 @@ class ExecutionService:
                 market_executable = True
             except Exception:
                 market_executable = False
+        withdrawal_state = None
+        if key_active and profile_bound and profile:
+            try:
+                withdrawal_state = await self.gateway.withdrawal_state(
+                    int(profile["accountIndex"]),
+                    "USDG",
+                )
+            except Exception:
+                withdrawal_state = None
         nonce_lane = None
         nonce_lane_ready = True
         if key_active and profile:
@@ -532,6 +680,42 @@ class ExecutionService:
                 and nonce_lane_ready
                 and market_executable
             ),
+            "canWithdraw": (
+                exits_allowed(exit_only_enabled=self.settings.exit_only_enabled)
+                and key_active
+                and nonce_lane_ready
+                and withdrawal_state is not None
+                and not withdrawal_state.has_open_positions
+                and withdrawal_state.pending_order_count == 0
+                and withdrawal_state.available_balance
+                >= withdrawal_state.asset.min_withdrawal_amount
+                and withdrawal_state.available_balance > 0
+            ),
+            "withdrawal": {
+                "asset": "USDG",
+                "route": "PERP",
+                "destinationWallet": context.wallet_address,
+                "availableBalance": (
+                    format(withdrawal_state.available_balance, "f")
+                    if withdrawal_state is not None
+                    else "0"
+                ),
+                "minimumAmount": (
+                    format(withdrawal_state.asset.min_withdrawal_amount, "f")
+                    if withdrawal_state is not None
+                    else None
+                ),
+                "openPositions": (
+                    withdrawal_state.has_open_positions
+                    if withdrawal_state is not None
+                    else None
+                ),
+                "pendingOrderCount": (
+                    withdrawal_state.pending_order_count
+                    if withdrawal_state is not None
+                    else None
+                ),
+            },
             "nonceLane": {
                 "state": nonce_lane_state,
                 "lockedUntil": nonce_lane.get("lockExpiresAt") if not nonce_lane_ready and nonce_lane else None,
@@ -1054,6 +1238,7 @@ class ExecutionService:
     async def create_order(self, context: RequestContext, body: dict[str, Any]) -> ServiceResult:
         payload = self._economic_payload(body)
         prepared: dict[str, Any] = {}
+        reconciliation: dict[str, Any] = {}
 
         def preflight() -> None:
             profile = self._profile(context, require_integrator=True)
@@ -1127,6 +1312,7 @@ class ExecutionService:
                 price_ticks,
                 actual_base,
                 is_ask,
+                reconciliation,
             )
 
         return await self._idempotent(
@@ -1136,6 +1322,7 @@ class ExecutionService:
             work,
             hash_body=payload,
             preflight=preflight,
+            reconciliation=reconciliation,
         )
 
     async def _execute_new_order(
@@ -1148,10 +1335,18 @@ class ExecutionService:
         price_ticks: int,
         actual_base: Decimal,
         is_ask: bool,
+        reconciliation: dict[str, Any],
     ) -> tuple[str, dict[str, Any]]:
         assert context.request_id is not None
         account_index = int(profile["accountIndex"])
         api_key_index = int(profile["apiKeyIndex"])
+        reconciliation.update(
+            {
+                "accountIndex": account_index,
+                "apiKeyIndex": api_key_index,
+                "clientOrderId": deterministic_client_order_index(context.request_id),
+            }
+        )
         lease_owner = f"request:{context.request_id.lower()}"
         self.repo.acquire_nonce_lease(
             account_index,
@@ -1168,6 +1363,7 @@ class ExecutionService:
             secret = self.repo.get_secret(context.subject_hash)
             client = self.gateway.signer(account_index, api_key_index, secret["privateKey"])
             leverage_nonce = await self.gateway.next_nonce(account_index, api_key_index)
+            reconciliation.update({"stage": "LEVERAGE", "attemptedNonce": leverage_nonce})
             leverage_submission = await self.gateway.update_leverage(
                 client,
                 market,
@@ -1178,6 +1374,7 @@ class ExecutionService:
             )
             await brief_settlement_delay(leverage_submission)
             order_nonce = await self.gateway.next_nonce(account_index, api_key_index)
+            reconciliation.update({"stage": "ORDER", "attemptedNonce": order_nonce})
             submission = await self.gateway.submit_order(
                 client,
                 market,
@@ -1192,6 +1389,13 @@ class ExecutionService:
             )
             await brief_settlement_delay(submission)
         except VenueAmbiguous:
+            if "attemptedNonce" not in reconciliation:
+                raise ServiceError(
+                    "VENUE_NONCE_UNAVAILABLE",
+                    "The venue nonce could not be established before submission",
+                    http_status=503,
+                    retryable=True,
+                )
             release = False
             self.repo.quarantine_nonce_lease(
                 account_index,
@@ -1220,6 +1424,7 @@ class ExecutionService:
     async def cancel_order(self, context: RequestContext, body: dict[str, Any]) -> ServiceResult:
         payload = self._economic_payload(body)
         prepared: dict[str, Any] = {}
+        reconciliation: dict[str, Any] = {}
 
         def preflight() -> None:
             profile = self._profile(context, require_integrator=False)
@@ -1245,6 +1450,8 @@ class ExecutionService:
                 lambda client, nonce, api_key: self.gateway.cancel_order(
                     client, market_index, cancellation.order_id, nonce, api_key
                 ),
+                reconciliation=reconciliation,
+                stage="CANCEL",
             )
             return "SUBMITTED", {
                 "marketSymbol": cancellation.market_symbol,
@@ -1259,11 +1466,13 @@ class ExecutionService:
             work,
             hash_body=payload,
             preflight=preflight,
+            reconciliation=reconciliation,
         )
 
     async def cancel_all(self, context: RequestContext, body: dict[str, Any]) -> ServiceResult:
         payload = self._economic_payload(body)
         prepared: dict[str, Any] = {}
+        reconciliation: dict[str, Any] = {}
 
         def preflight() -> None:
             profile = self._profile(context, require_integrator=False)
@@ -1291,6 +1500,8 @@ class ExecutionService:
                 lambda client, nonce, api_key: self.gateway.cancel_all(
                     client, market_index, nonce, api_key
                 ),
+                reconciliation=reconciliation,
+                stage="CANCEL_ALL",
             )
             return "SUBMITTED", {"marketSymbol": symbol, **submission.public()}
 
@@ -1301,11 +1512,13 @@ class ExecutionService:
             work,
             hash_body=payload,
             preflight=preflight,
+            reconciliation=reconciliation,
         )
 
     async def close_position(self, context: RequestContext, body: dict[str, Any]) -> ServiceResult:
         payload = self._economic_payload(body)
         prepared: dict[str, Any] = {}
+        reconciliation: dict[str, Any] = {}
 
         def preflight() -> None:
             profile = self._profile(context, require_integrator=False)
@@ -1365,7 +1578,13 @@ class ExecutionService:
                     api_key_index=api_key,
                 )
 
-            submission = await self._with_nonce(context, profile, submit)
+            submission = await self._with_nonce(
+                context,
+                profile,
+                submit,
+                reconciliation=reconciliation,
+                stage="CLOSE",
+            )
             close_notional = actual_base * market.mark_price
             return "SUBMITTED", {
                 "marketSymbol": close.market_symbol,
@@ -1387,6 +1606,95 @@ class ExecutionService:
             work,
             hash_body=payload,
             preflight=preflight,
+            reconciliation=reconciliation,
+        )
+
+    async def withdraw(self, context: RequestContext, body: dict[str, Any]) -> ServiceResult:
+        payload = self._economic_payload(body)
+        prepared: dict[str, Any] = {}
+        reconciliation: dict[str, Any] = {}
+
+        def preflight() -> None:
+            profile = self._profile(context, require_integrator=False)
+            assert context.request_id is not None
+            verify_execution_authorization(
+                body,
+                action="withdraw",
+                request_id=context.request_id,
+                expected_wallet=str(profile["walletAddress"]),
+            )
+            prepared["profile"] = profile
+            prepared["withdrawal"] = parse_withdrawal(payload)
+
+        async def work() -> tuple[str, dict[str, Any]]:
+            profile = prepared["profile"]
+            withdrawal = prepared["withdrawal"]
+            if not exits_allowed(exit_only_enabled=self.settings.exit_only_enabled):
+                raise ServiceError(
+                    "WITHDRAWALS_LOCKED",
+                    "Withdrawals are currently disabled",
+                    http_status=423,
+                )
+
+            async def submit(client: Any, nonce: int, api_key: int) -> Any:
+                state = await self.gateway.withdrawal_state(
+                    int(profile["accountIndex"]),
+                    "USDG",
+                )
+                if state.has_open_positions or state.pending_order_count > 0:
+                    raise ServiceError(
+                        "WITHDRAWAL_EXPOSURE_ACTIVE",
+                        "Cancel all orders and close all positions before withdrawing",
+                        http_status=423,
+                    )
+                if withdrawal.amount < state.asset.min_withdrawal_amount:
+                    raise ServiceError(
+                        "WITHDRAWAL_BELOW_MINIMUM",
+                        (
+                            "Withdrawal must be at least "
+                            f"{format(state.asset.min_withdrawal_amount, 'f')} USDG"
+                        ),
+                        http_status=409,
+                    )
+                if withdrawal.amount > state.available_balance:
+                    raise ServiceError(
+                        "INSUFFICIENT_WITHDRAWABLE_BALANCE",
+                        "Withdrawal exceeds the authoritative available venue balance",
+                        http_status=409,
+                    )
+                prepared["withdrawalState"] = state
+                return await self.gateway.withdraw(
+                    client,
+                    state.asset,
+                    withdrawal.amount,
+                    nonce,
+                    api_key,
+                )
+
+            submission = await self._with_nonce(
+                context,
+                profile,
+                submit,
+                reconciliation=reconciliation,
+                stage="WITHDRAW",
+            )
+            state = prepared["withdrawalState"]
+            return "SUBMITTED", {
+                "asset": state.asset.symbol,
+                "amount": format(withdrawal.amount, "f"),
+                "route": "PERP",
+                "destinationWallet": str(profile["walletAddress"]),
+                **submission.public(),
+            }
+
+        return await self._idempotent(
+            context,
+            "withdraw",
+            body,
+            work,
+            hash_body=payload,
+            preflight=preflight,
+            reconciliation=reconciliation,
         )
 
     async def _with_nonce(
@@ -1394,10 +1702,20 @@ class ExecutionService:
         context: RequestContext,
         profile: dict[str, Any],
         submitter: Callable[[Any, int, int], Awaitable[Any]],
+        *,
+        reconciliation: dict[str, Any],
+        stage: str,
     ) -> Any:
         assert context.request_id is not None
         account_index = int(profile["accountIndex"])
         api_key_index = int(profile["apiKeyIndex"])
+        reconciliation.update(
+            {
+                "accountIndex": account_index,
+                "apiKeyIndex": api_key_index,
+                "stage": stage,
+            }
+        )
         lease_owner = f"request:{context.request_id.lower()}"
         self.repo.acquire_nonce_lease(
             account_index,
@@ -1411,10 +1729,18 @@ class ExecutionService:
             secret = self.repo.get_secret(context.subject_hash)
             client = self.gateway.signer(account_index, api_key_index, secret["privateKey"])
             nonce = await self.gateway.next_nonce(account_index, api_key_index)
+            reconciliation["attemptedNonce"] = nonce
             submission = await submitter(client, nonce, api_key_index)
             await brief_settlement_delay(submission)
             return submission
         except VenueAmbiguous:
+            if "attemptedNonce" not in reconciliation:
+                raise ServiceError(
+                    "VENUE_NONCE_UNAVAILABLE",
+                    "The venue nonce could not be established before submission",
+                    http_status=503,
+                    retryable=True,
+                )
             release = False
             self.repo.quarantine_nonce_lease(
                 account_index,
@@ -1430,14 +1756,23 @@ class ExecutionService:
                 self.repo.release_nonce_lease(account_index, api_key_index, lease_owner)
 
     async def activity(self, context: RequestContext, *, limit: int) -> ServiceResult:
+        profile = self.repo.get_profile(context.subject_hash)
+        try:
+            await self._reconcile_unknown_requests(context, profile)
+        except Exception:
+            logger.exception(
+                "Activity reconciliation failed closed",
+                extra={"subject_hash": context.subject_hash},
+            )
         requests = self.repo.list_requests(context.subject_hash, limit=limit)
-        empty: dict[str, list[dict[str, Any]]] = {
+        empty: dict[str, Any] = {
+            "account": None,
             "positions": [],
             "openOrders": [],
             "orderHistory": [],
             "tradeHistory": [],
+            "withdrawalHistory": [],
         }
-        profile = self.repo.get_profile(context.subject_hash)
         if (
             profile is None
             or str(profile.get("walletAddress", "")).lower() != context.wallet_address.lower()
@@ -1459,7 +1794,14 @@ class ExecutionService:
             {**activity, "items": [self._public_request(item) for item in requests]},
         )
 
-    def request_status(self, context: RequestContext, request_id: str) -> ServiceResult:
+    async def request_status(self, context: RequestContext, request_id: str) -> ServiceResult:
+        try:
+            await self._reconcile_unknown_requests(context, request_id=request_id)
+        except Exception:
+            logger.exception(
+                "Request reconciliation failed closed",
+                extra={"subject_hash": context.subject_hash, "request_id": request_id},
+            )
         item = self.repo.get_request(context.subject_hash, request_id)
         if item is None:
             raise ServiceError("REQUEST_NOT_FOUND", "Execution request was not found", http_status=404)

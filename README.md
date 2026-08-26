@@ -13,7 +13,7 @@ Aventa is a live multi-asset terminal and perpetual trading interface designed f
 - Searchable market catalog that stays hidden until the selected pair is opened, with categories, favorites, source labels, sessions, and accurate feed states.
 - Market, limit, and stop ticket controls; long/short, cross/isolated margin, pair-specific leverage limits, reduce-only, take-profit, stop-loss, and slippage controls. Every crypto market is capped at 15× in Aventa; venue, account, jurisdiction, and notional tiers can reduce that cap further.
 - Robinhood Chain wallet add/switch flow for chain ID 4663 and server-side onchain ETH and USDG balance reads.
-- Terminal account drawer with balances, deposit/withdraw controls, and event-history states. Transfer submission remains disabled until a verified audited vault and indexer exist.
+- Terminal account drawer with balances, Robinhood Lighter intent-address deposits, signer-authorized USDG withdrawals, and event-history states. Deposits require a server-verified Robinhood Chain wallet and at least 1 USDG. Withdrawals resolve venue asset metadata dynamically, return only to the profile-bound verified wallet, and remain blocked until every position is flat and every order is cancelled.
 - D1-backed profile provisioning for server-verified Privy DIDs, persisted English-only interface preferences and favorites, verified-wallet associations, security audit records, and chain-derived account projections. A Sites-dispatch identity fallback exists only as an explicit private-preview switch and is off by default.
 - Private account APIs for session state, account summary, preferences, verified vault history, and database health. Financial history is returned only for a wallet that has a server-verified ownership link.
 - An account-scoped Signal Desk with persisted conversations, deterministic natural-language intent parsing, structured long/short/close/cancel intents, bounded risk review, idempotent writes, and optimistic review transitions. An acknowledged executable intent can enter the same signer path as the manual ticket only after the wallet signs that exact payload; there is no agent bypass.
@@ -44,7 +44,7 @@ Implemented private routes:
 - `GET /api/account/history?address=…` returns indexed vault activity only after server-verified wallet ownership.
 - `POST /api/account/wallets/sync` fetches the current Privy user server-to-server and reconciles only Privy embedded Ethereum wallets. A per-user compare-and-set guard prevents an older in-flight snapshot from overwriting a newer one, and failed/incomplete sync state cannot authorize private wallet data. The client refreshes every four minutes and read authorization expires after ten minutes, so a skipped refresh cannot preserve an old attestation indefinitely. Revoked attestations are deactivated; browser address assertions never create links or overwrite SIWE/EIP-1271 ownership.
 - `GET /api/health` verifies D1, Privy configuration, and the isolated execution-service configuration without claiming per-user readiness.
-- `/api/execution/*` exposes Privy-only readiness, key enrollment, fee approval, create/cancel/close, request status, and private activity proxies. The proxy accepts only typed fields, derives identity server-side, and signs its private Lambda request with AWS Signature Version 4.
+- `/api/execution/*` exposes Privy-only readiness, key enrollment, fee approval, create/cancel/close/withdraw, request status, and private activity proxies. The proxy accepts only typed fields, derives identity server-side, and signs its private Lambda request with AWS Signature Version 4.
 - `/api/agent/*` exposes account-scoped conversation persistence, intent reads, acknowledge/reject review, and wallet-signed execution of the acknowledged payload through the same execution API. Every write requires same-origin verification.
 
 Privy bearer authentication takes precedence whenever an Authorization header is present. The backend verifies the token signature against Privy's public JWKS (or an explicitly configured static verification key), then checks issuer, audience, expiry, session, and Privy DID before provisioning a D1 profile. The Sites dispatcher identity is rejected unless `ALLOW_SITES_AUTH_FALLBACK=true` is deliberately set for an owner-only preview. Browser wallet discovery and identity-token snapshots never create an ownership link. External and smart-contract wallets require a future chain-4663 SIWE/EIP-1271 flow before D1 can use them for private account authorization.
@@ -102,7 +102,7 @@ Never place a Privy App Secret, indexer credential, oracle credential, private k
 
 ## Isolated execution service
 
-`execution-service/` contains the AWS Lambda ZIP application, pinned Lighter SDK contract, DynamoDB/SSM storage boundary, and infrastructure template used by Aventa. D1 remains a profile and UI-projection database; it never becomes the authoritative nonce, key, balance, order, or position store.
+`execution-service/` contains the AWS Lambda ZIP application, pinned Lighter SDK contract, DynamoDB plus KMS storage boundary, and infrastructure template used by Aventa. D1 remains a profile and UI-projection database; it never becomes the authoritative nonce, key, balance, order, or position store.
 
 Live risk-increasing execution requires all of the following:
 
@@ -110,8 +110,9 @@ Live risk-increasing execution requires all of the following:
 2. Store that principal only as encrypted Sites secrets and configure `EXECUTION_FUNCTION_URL`, `AWS_EXECUTION_REGION`, and the execution credentials.
 3. Keep `EXECUTION_MODE=off` during deployment, run the signer, nonce, idempotency, fee-scale, and ambiguous-response tests, then enable one tiny allowlisted `canary` account.
 4. Verify that treasury account `17005` is still owned by `0xCe8756522C90B405c9647aE6BbcA169240965225` and that every user approval is capped at exactly 1,700 Lighter fee units (0.17%).
-5. Confirm that quota, budget, MAU, oracle, and venue circuit breakers block open/increase while cancel and reduce-only close remain available.
-6. Complete security review, monitoring, incident response, eligibility controls, terms, disclosures, and jurisdiction-specific legal review before broad public mainnet access.
+5. Confirm that quota, budget, MAU, oracle, and venue circuit breakers block open/increase while cancel, reduce-only close, and exposure-safe withdrawal remain available.
+6. Force an ambiguous canary response and verify that the signed transaction hash or authoritative nonce automatically reconciles the request before the lane reopens.
+7. Complete security review, monitoring, incident response, eligibility controls, terms, disclosures, and jurisdiction-specific legal review before broad public mainnet access.
 
 Never set `limited_live` merely to make the UI appear active. The remote readiness response is authoritative for every account and every request.
 

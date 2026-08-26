@@ -798,6 +798,25 @@ export default function Home() {
       // The execution hook presents the venue-safe failure state.
     }
   }, [execution, wallet]);
+  const withdrawUsdG = useCallback(async (amount: string) => {
+    if (!wallet.address) throw new Error('Connect your verified wallet before withdrawing.');
+    if (!wallet.isRobinhoodChain) {
+      await wallet.switchNetwork();
+      throw new Error('Robinhood Chain is now selected. Review the withdrawal and submit again.');
+    }
+    if (!wallet.ownershipVerified) {
+      await wallet.verifyOwnership();
+      await execution.refresh();
+      throw new Error('Wallet ownership is verified. Review the withdrawal and submit again.');
+    }
+    return execution.execute(
+      'withdraw',
+      '/api/execution/withdrawals',
+      { amount },
+      wallet.address,
+      wallet.signMessage,
+    );
+  }, [execution, wallet]);
   const referenceFunding = cryptoDetail.fundingRate !== undefined ? cryptoDetail.fundingRate * 100 : undefined;
   const nextFundingLabel = cryptoDetail.nextFunding ? new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }).format(cryptoDetail.nextFunding) : 'Loading…';
   const auxiliaryMetricLabel = selected.derivativesSymbol
@@ -1001,7 +1020,22 @@ export default function Home() {
         <div className="risk-copy"><p><strong>Execution:</strong> Every order, cancel, and close carries a fresh wallet signature over the exact payload and expires after 30 seconds.</p><p><strong>Risk reduction:</strong> Quota or budget protection blocks new risk while cancel and reduce-only close remain available.</p><p><strong>Fees:</strong> Aventa charges {aventaTradeFeePolicy.percent.toFixed(2)}% of actual filled notional while the approved fee route is healthy. Emergency reduce-only exits waive Aventa’s fee if that route is unavailable. Venue fees, funding, and network costs are separate.</p><p><strong>Market risk:</strong> Market and limit orders can experience slippage, partial fills, or fail during fast markets.</p><p><strong>Eligibility:</strong> Perpetual products may be restricted by jurisdiction and account status.</p></div>
         <a className="drawer-link" href="https://docs.lighter.xyz/perpetual-futures/api" target="_blank" rel="noreferrer">Read venue API requirements ↗</a>
       </section></div>}
-      <AccountDrawer account={wallet} open={accountOpen} onClose={closeAccountDrawer} />
+      <AccountDrawer
+        account={wallet}
+        withdrawal={{
+          canSubmit: execution.readiness.canWithdraw,
+          availableBalance: execution.readiness.withdrawal.availableBalance,
+          minimumAmount: execution.readiness.withdrawal.minimumAmount,
+          openPositions: execution.readiness.withdrawal.openPositions,
+          pendingOrderCount: execution.readiness.withdrawal.pendingOrderCount,
+          busy: execution.busy,
+          notice: execution.notice,
+          error: execution.error,
+          submit: withdrawUsdG,
+        }}
+        open={accountOpen}
+        onClose={closeAccountDrawer}
+      />
       <AuthSheet open={authOpen} onClose={closeAuthSheet} />
     </main>
   );

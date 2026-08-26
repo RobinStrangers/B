@@ -16,7 +16,7 @@ export function canonicalExecutionPayload(payload: unknown) {
 }
 
 export function executionAuthorizationMessage(options: {
-  action: 'order' | 'cancel' | 'cancel-all' | 'close';
+  action: 'order' | 'cancel' | 'cancel-all' | 'close' | 'withdraw';
   idempotencyKey: string;
   issuedAt: number;
   expiresAt: number;

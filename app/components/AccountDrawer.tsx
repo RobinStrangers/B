@@ -9,6 +9,17 @@ import { shortAddress, type RobinhoodAccountState, type WalletAssetBalance } fro
 
 type AccountDrawerProps = {
   account: RobinhoodAccountState;
+  withdrawal: {
+    canSubmit: boolean;
+    availableBalance: string;
+    minimumAmount?: string;
+    openPositions?: boolean;
+    pendingOrderCount?: number;
+    busy: boolean;
+    notice: string;
+    error: string;
+    submit: (amount: string) => Promise<unknown>;
+  };
   open: boolean;
   onClose: () => void;
 };
@@ -94,13 +105,15 @@ function parseHistoryResponse(value: unknown): VaultHistoryResponse | undefined 
   };
 }
 
-export default function AccountDrawer({ account, open, onClose }: AccountDrawerProps) {
+export default function AccountDrawer({ account, withdrawal, open, onClose }: AccountDrawerProps) {
   const [tab, setTab] = useState<DrawerTab>('balances');
   const [mode, setMode] = useState<TransferMode>('deposit');
   const [selectedAsset, setSelectedAsset] = useState<'ETH' | 'USDG'>('USDG');
   const [amount, setAmount] = useState('');
   const [depositNotice, setDepositNotice] = useState('');
   const [depositTxHash, setDepositTxHash] = useState('');
+  const [withdrawalNotice, setWithdrawalNotice] = useState('');
+  const [withdrawalTxHash, setWithdrawalTxHash] = useState('');
   const [authOpen, setAuthOpen] = useState(false);
   const [session, setSession] = useState<DisplaySession>();
   const [historyState, setHistoryState] = useState<HistoryState>();
@@ -129,6 +142,19 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
     && account.isRobinhoodChain
     && account.ownershipVerified
     && !account.busy;
+  const parsedWithdrawalAmount = Number(amount);
+  const parsedWithdrawalAvailable = Number(withdrawal.availableBalance);
+  const parsedWithdrawalMinimum = Number(withdrawal.minimumAmount ?? '0');
+  const withdrawalReady = mode === 'withdraw'
+    && /^\d+(?:\.\d+)?$/.test(amount)
+    && Number.isFinite(parsedWithdrawalAmount)
+    && parsedWithdrawalAmount > 0
+    && parsedWithdrawalAmount >= parsedWithdrawalMinimum
+    && parsedWithdrawalAmount <= parsedWithdrawalAvailable
+    && account.ownershipVerified
+    && withdrawal.canSubmit
+    && !withdrawal.busy;
+  const maxTransferAmount = mode === 'deposit' ? maxDepositAmount : withdrawal.availableBalance;
   const historyKey = account.address ? account.address.toLowerCase() : '';
   const historyScopeKey = `${historyKey}:${privyAuthenticated ? 'privy' : 'fallback'}`;
   const history = historyState?.key === historyScopeKey ? historyState.response : undefined;
@@ -265,6 +291,30 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
     }
   };
 
+  const handleWithdrawal = async () => {
+    if (!withdrawalReady) return;
+    setWithdrawalNotice('Review and sign the exact USDG withdrawal in your wallet…');
+    setWithdrawalTxHash('');
+    try {
+      const result = await withdrawal.submit(amount);
+      const row = result && typeof result === 'object' && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : undefined;
+      const txHash = typeof row?.venueTxHash === 'string' ? row.venueTxHash : '';
+      setWithdrawalTxHash(txHash);
+      setAmount('');
+      setWithdrawalNotice(
+        'Withdrawal submitted to Robinhood Lighter. The destination is the verified wallet bound to this account.',
+      );
+    } catch (withdrawalError) {
+      setWithdrawalNotice(
+        withdrawalError instanceof Error
+          ? withdrawalError.message
+          : 'The withdrawal could not be submitted safely.',
+      );
+    }
+  };
+
   if (!open || typeof document === 'undefined') return null;
 
   return createPortal(
@@ -316,16 +366,21 @@ export default function AccountDrawer({ account, open, onClose }: AccountDrawerP
 
           {account.address && account.isRobinhoodChain && tab === 'transfer' && (
             <div className="account-transfer-view" role="tabpanel" id="account-panel-transfer" aria-labelledby="account-tab-transfer">
-              <div className="account-transfer-mode">{(['deposit', 'withdraw'] as TransferMode[]).map((item) => <button type="button" aria-pressed={mode === item} className={mode === item ? 'active' : ''} onClick={() => item === 'deposit' && setMode(item)} disabled={item === 'withdraw'} title={item === 'withdraw' ? 'Native withdrawal will be enabled after signer activation is complete.' : undefined} key={item}>{item === 'deposit' ? 'Deposit' : 'Withdraw'}</button>)}</div>
+              <div className="account-transfer-mode">{(['deposit', 'withdraw'] as TransferMode[]).map((item) => <button type="button" aria-pressed={mode === item} className={mode === item ? 'active' : ''} onClick={() => { setMode(item); setAmount(''); }} key={item}>{item === 'deposit' ? 'Deposit' : 'Withdraw'}</button>)}</div>
               <span className="account-field-label">Asset</span>
               <div className="account-asset-selector">
                 {account.assets.filter((asset) => asset.symbol === 'USDG').map((asset) => <button type="button" aria-pressed={selectedAsset === asset.symbol} className={selectedAsset === asset.symbol ? 'active' : ''} onClick={() => setSelectedAsset(asset.symbol)} key={asset.symbol}><TokenIcon symbol={asset.symbol} variant="branded" size={22} fallback={asset.symbol.slice(0, 1)} /><span>{asset.symbol}</span><small>{asset.balance ?? '—'}</small></button>)}
               </div>
-              <label className="account-amount-field"><span><b>Amount</b><small>{mode === 'deposit' ? `Wallet available ${currentAsset?.balance ?? '—'} ${selectedAsset}` : `Venue available — ${selectedAsset}`}</small></span><div><input inputMode="decimal" value={amount} onChange={handleAmountChange} placeholder="0.00" aria-label={`${mode} amount`} /><button type="button" disabled={mode !== 'deposit' || !maxDepositAmount} onClick={() => maxDepositAmount && setAmount(maxDepositAmount)}>MAX</button><strong>{selectedAsset}</strong></div></label>
-              <div className="account-transfer-summary"><div><span>Route</span><strong>Wallet → Robinhood Lighter</strong></div><div><span>Network</span><strong>Robinhood Chain · 4663</strong></div><div><span>Collateral</span><strong>USDG · Perps margin</strong></div></div>
-              <button className="account-transfer-submit" type="button" disabled={!depositReady} onClick={() => void handleDeposit()}>{account.busy ? 'Waiting for wallet / chain…' : !account.ownershipVerified ? 'Verify wallet to deposit' : 'Deposit USDG & onboard'}</button>
-              {depositNotice && <p className="account-transfer-notice" role="status">{depositNotice}{depositTxHash && <a href={`https://robinhoodchain.blockscout.com/tx/${depositTxHash}`} target="_blank" rel="noreferrer"> View transaction ↗</a>}</p>}
-              <p className="account-transfer-warning">Aventa requests your persistent Robinhood Lighter deposit address, then your wallet transfers USDG directly to it on Robinhood Chain. Aventa never takes custody. Minimum deposit is 1 USDG; first-time wallets are onboarded by the venue and Aventa watches for the resulting Lighter account automatically.</p>
+              <label className="account-amount-field"><span><b>Amount</b><small>{mode === 'deposit' ? `Wallet available ${currentAsset?.balance ?? '—'} ${selectedAsset}` : `Venue available ${withdrawal.availableBalance} ${selectedAsset}`}</small></span><div><input inputMode="decimal" value={amount} onChange={handleAmountChange} placeholder="0.00" aria-label={`${mode} amount`} /><button type="button" disabled={!maxTransferAmount || Number(maxTransferAmount) <= 0} onClick={() => maxTransferAmount && setAmount(maxTransferAmount)}>MAX</button><strong>{selectedAsset}</strong></div></label>
+              <div className="account-transfer-summary"><div><span>Route</span><strong>{mode === 'deposit' ? 'Wallet → Robinhood Lighter' : 'Robinhood Lighter → Verified wallet'}</strong></div><div><span>Network</span><strong>Robinhood Chain · 4663</strong></div><div><span>Collateral</span><strong>USDG · Perps margin</strong></div></div>
+              {mode === 'deposit' ? (
+                <button className="account-transfer-submit" type="button" disabled={!depositReady} onClick={() => void handleDeposit()}>{account.busy ? 'Waiting for wallet / chain…' : !account.ownershipVerified ? 'Verify wallet to deposit' : 'Deposit USDG & onboard'}</button>
+              ) : (
+                <button className="account-transfer-submit" type="button" disabled={!withdrawalReady} onClick={() => void handleWithdrawal()}>{withdrawal.busy ? 'Waiting for secure execution…' : !account.ownershipVerified ? 'Verify wallet to withdraw' : withdrawal.openPositions || (withdrawal.pendingOrderCount ?? 0) > 0 ? 'Close positions & cancel orders first' : !withdrawal.canSubmit ? 'Activate trading authority first' : 'Withdraw USDG'}</button>
+              )}
+              {mode === 'deposit' && depositNotice && <p className="account-transfer-notice" role="status">{depositNotice}{depositTxHash && <a href={`https://robinhoodchain.blockscout.com/tx/${depositTxHash}`} target="_blank" rel="noreferrer"> View transaction ↗</a>}</p>}
+              {mode === 'withdraw' && (withdrawalNotice || withdrawal.notice || withdrawal.error) && <p className="account-transfer-notice" role={withdrawal.error ? 'alert' : 'status'}>{withdrawal.error || withdrawalNotice || withdrawal.notice}{withdrawalTxHash && <small> Venue tx {shortAddress(withdrawalTxHash)}</small>}</p>}
+              <p className="account-transfer-warning">{mode === 'deposit' ? 'Aventa requests your persistent Robinhood Lighter deposit address, then your wallet transfers USDG directly to it on Robinhood Chain. Aventa never takes custody. Minimum deposit is 1 USDG; first-time wallets are onboarded by the venue and Aventa watches for the resulting Lighter account automatically.' : `Withdrawals use your encrypted user-owned Lighter key and require a fresh 30-second wallet authorization. USDG returns only to the verified wallet bound to this account. For margin safety, all positions must be closed and all orders cancelled first${withdrawal.minimumAmount ? `; venue minimum ${withdrawal.minimumAmount} USDG` : ''}.`}</p>
             </div>
           )}
 

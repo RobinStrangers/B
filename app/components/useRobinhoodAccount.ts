@@ -320,9 +320,10 @@ export function useRobinhoodAccount() {
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState<number>();
   const [walletDisabled, setWalletDisabled] = useState(false);
-  const [ownershipVerified, setOwnershipVerified] = useState(false);
+  const [verifiedAddress, setVerifiedAddress] = useState('');
   const [verificationBusy, setVerificationBusy] = useState(false);
   const requestGeneration = useRef(0);
+  const ownershipRequestGeneration = useRef(0);
   const providerRef = useRef<Eip1193Provider | undefined>(undefined);
   const walletCandidate = useMemo(() => {
     const evmWallets = wallets.filter((wallet) => wallet.type === 'ethereum');
@@ -338,6 +339,12 @@ export function useRobinhoodAccount() {
   const connectedWallet = privy.authenticated && !walletDisabled ? walletCandidate : undefined;
 
   const isRobinhoodChain = chainId.toLowerCase() === ROBINHOOD_CHAIN_ID;
+  const ownershipVerified = Boolean(
+    privy.authenticated
+    && isRobinhoodChain
+    && address
+    && verifiedAddress === address.toLowerCase()
+  );
 
   const resolveProvider = useCallback(async () => {
     if (connectedWallet?.type === 'ethereum') {
@@ -373,17 +380,26 @@ export function useRobinhoodAccount() {
   }, []);
 
   const refreshOwnershipVerification = useCallback(async (account: string) => {
+    const generation = ++ownershipRequestGeneration.current;
     if (!privy.authenticated || !account) {
-      setOwnershipVerified(false);
+      setVerifiedAddress('');
       return false;
     }
+    const normalizedAccount = account.toLowerCase();
     try {
       const response = await authFetch('/api/account/summary', { cache: 'no-store' });
-      if (!response.ok) return false;
-      const verified = verifiedWalletFromSummary(await response.json(), account);
-      setOwnershipVerified(verified);
+      if (generation !== ownershipRequestGeneration.current) return false;
+      if (!response.ok) {
+        setVerifiedAddress('');
+        return false;
+      }
+      const payload = await response.json();
+      if (generation !== ownershipRequestGeneration.current) return false;
+      const verified = verifiedWalletFromSummary(payload, account);
+      setVerifiedAddress(verified ? normalizedAccount : '');
       return verified;
     } catch {
+      if (generation === ownershipRequestGeneration.current) setVerifiedAddress('');
       return false;
     }
   }, [authFetch, privy.authenticated]);
@@ -453,7 +469,8 @@ export function useRobinhoodAccount() {
       if (!verifyPayload || typeof verifyPayload !== 'object' || (verifyPayload as Record<string, unknown>).verified !== true) {
         throw new Error('Wallet ownership verification returned an invalid response.');
       }
-      setOwnershipVerified(true);
+      ownershipRequestGeneration.current += 1;
+      setVerifiedAddress(normalizedAccount);
       return true;
     } finally {
       setVerificationBusy(false);
@@ -470,7 +487,8 @@ export function useRobinhoodAccount() {
     if (generation !== requestGeneration.current) return;
     setAddress(nextAddress);
     setChainId(normalizedChain);
-    setOwnershipVerified(false);
+    ownershipRequestGeneration.current += 1;
+    setVerifiedAddress('');
     setAssets(initialAssets());
     setUpdatedAt(undefined);
     if (nextAddress) await refreshBalances(nextAddress, generation);
@@ -486,7 +504,8 @@ export function useRobinhoodAccount() {
         setChainId('');
         setAssets(initialAssets());
         setUpdatedAt(undefined);
-        setOwnershipVerified(false);
+        ownershipRequestGeneration.current += 1;
+        setVerifiedAddress('');
         setError('');
       }, 0);
       return () => window.clearTimeout(resetTimer);
@@ -505,6 +524,8 @@ export function useRobinhoodAccount() {
           setChainId('');
           setAssets(initialAssets());
           setUpdatedAt(undefined);
+          ownershipRequestGeneration.current += 1;
+          setVerifiedAddress('');
         }
         return;
       }
@@ -515,6 +536,8 @@ export function useRobinhoodAccount() {
           setAddress('');
           setChainId('');
           setAssets(initialAssets());
+          ownershipRequestGeneration.current += 1;
+          setVerifiedAddress('');
         }
         return;
       }
@@ -562,11 +585,11 @@ export function useRobinhoodAccount() {
   }, [address, refreshBalances]);
 
   useEffect(() => {
-    if (!privy.authenticated || !address || !isRobinhoodChain) {
-      setOwnershipVerified(false);
-      return;
-    }
-    void refreshOwnershipVerification(address).catch(() => undefined);
+    if (!privy.authenticated || !address || !isRobinhoodChain) return;
+    const refreshTimer = window.setTimeout(() => {
+      void refreshOwnershipVerification(address).catch(() => undefined);
+    }, 0);
+    return () => window.clearTimeout(refreshTimer);
   }, [address, isRobinhoodChain, privy.authenticated, refreshOwnershipVerification]);
 
   const verifyOwnership = useCallback(async () => {
@@ -841,7 +864,8 @@ export function useRobinhoodAccount() {
     setChainId('');
     setAssets(initialAssets());
     setUpdatedAt(undefined);
-    setOwnershipVerified(false);
+    ownershipRequestGeneration.current += 1;
+    setVerifiedAddress('');
     try {
       await walletCandidate?.disconnect();
     } finally {

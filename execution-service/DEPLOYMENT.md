@@ -14,7 +14,7 @@ This runbook is deliberately build-and-review first. It does not make the execut
 In PowerShell, create a source-only archive:
 
 ```powershell
-Set-Location C:\Users\user\Downloads\b20-launchpad
+Set-Location C:\Users\user\Downloads\B
 Compress-Archive -Path .\execution-service\* -DestinationPath .\aventa-execution-source.zip -CompressionLevel Optimal
 ```
 
@@ -101,8 +101,7 @@ sam deploy --guided \
     OpensEnabled=false \
     ExitOnlyEnabled=true \
     MaximumEnrolledUsers=450 \
-    MaximumNotionalUsd=25000 \
-    SsmParameterPrefix=/aventa/execution/prod/
+    MaximumNotionalUsd=25000
 ```
 
 At the guided prompts:
@@ -200,9 +199,10 @@ The Sites backend must SigV4-sign against service `lambda` and the same Region a
 Deployment is not live execution. Keep these gates until the preceding layer is verified:
 
 1. `ExecutionMode=off`, `OpensEnabled=false`: verify IAM, route handling, DynamoDB, logs, and treasury readiness.
-2. `ExecutionMode=canary`, `OpensEnabled=false`: enroll only explicit hashed test users and verify key/integrator signing plus cancel and close behavior.
-3. `ExecutionMode=canary`, `OpensEnabled=true`: permit low-notional operator trades only after `UNKNOWN` outcome reconciliation and monitoring are operational.
-4. Move to `limited_live` only after the canary is reviewed.
+2. `ExecutionMode=canary`, `OpensEnabled=false`: enroll only explicit hashed test users and verify key/integrator signing plus cancel, close, and minimum-size withdrawal behavior.
+3. Force an operator-test timeout and prove that readiness/activity reconciles the signed transaction or unconsumed nonce and releases the quarantined lane.
+4. `ExecutionMode=canary`, `OpensEnabled=true`: permit low-notional operator trades only after reconciliation alerts are operational.
+5. Move to `limited_live` only after the canary is reviewed.
 
 Never switch directly from `off` to `limited_live`.
 
@@ -213,8 +213,7 @@ At the template defaults, the base table plus activity index provision a combine
 At low traffic, the expected eligible-account baseline is approximately `$0/month`:
 
 - Lambda: 1 million requests and 400,000 GB-seconds per month are in the free tier; Function URLs have no separate endpoint fee.
-- Parameter Store Standard: no additional charge; the service explicitly writes Standard parameters.
-- AWS managed `aws/ssm` encryption: no additional key charge.
+- The customer-managed KMS key used for signer encryption is billable; confirm current regional pricing and include it in the budget.
 - CloudWatch Logs: the first 5 GB is in the free tier.
 - CloudShell: no additional charge.
 - CloudFormation and IAM: no separate resource charge.
@@ -222,7 +221,7 @@ At low traffic, the expected eligible-account baseline is approximately `$0/mont
 
 The `$100` credit balance is a buffer, not a spending control. At an uncovered DynamoDB baseline of about `$10.44/month`, it represents less than ten months before Lambda, log, S3, data-transfer, tax, or unrelated account usage, and the credit may expire earlier.
 
-The table uses `DeletionPolicy: Retain`, and runtime-created SSM keys are not CloudFormation resources. Deleting the stack therefore does **not** delete user execution state, SSM signer keys, the dedicated IAM user/access keys, or SAM artifacts. Cleanup must be a separate, explicitly reviewed procedure; never assume stack deletion removes sensitive execution material.
+The table and KMS key use retain-on-delete behavior. Deleting the stack therefore does **not** delete user execution state, encrypted signer ciphertext, the retained KMS key, the dedicated IAM user/access keys, or SAM artifacts. Cleanup must be a separate, explicitly reviewed procedure; never assume stack deletion removes sensitive execution material.
 
 ## Remaining production blockers
 
@@ -231,5 +230,5 @@ The table uses `DeletionPolicy: Retain`, and runtime-created SSM keys are not Cl
 - CloudShell `sam validate --lint`, native signer loading, and the built artifact size must pass in the target Region/account.
 - The exact IAM caller must be integrated into encrypted Sites backend secrets and tested with SigV4.
 - User Lighter key and integrator enrollments require real wallet signatures and cannot be completed by deployment automation.
-- There is no automatic venue reconciliation worker for `UNKNOWN` requests yet; live opens must remain disabled until an operator process exists.
+- Request-driven reconciliation is implemented for `UNKNOWN` requests; canary testing must prove signed-hash and nonce recovery, and alerts must catch requests that remain unknown beyond the quarantine threshold.
 - Billing alerts, execution alerts, access-key rotation, and incident response must be configured before public launch.

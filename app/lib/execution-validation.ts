@@ -180,3 +180,17 @@ export function validateClose(body: Record<string, unknown>) {
     authorization: validateAuthorization(body),
   };
 }
+
+export function validateWithdrawal(body: Record<string, unknown>) {
+  assertOnlyKeys(body, ['amount', 'authorization']);
+  return {
+    amount: decimalInRange(
+      body,
+      'amount',
+      0.00000001,
+      1_000_000_000,
+      'Withdrawal amount must be greater than 0 and no more than 1,000,000,000 USDG.',
+    ),
+    authorization: validateAuthorization(body),
+  };
+}

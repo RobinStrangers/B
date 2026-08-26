@@ -140,6 +140,8 @@ class DynamoRepository:
         *,
         response: dict[str, Any] | None = None,
         error_code: str | None = None,
+        reconciliation: dict[str, Any] | None = None,
+        clear_reconciliation: bool = False,
     ) -> dict[str, Any]:
         values: dict[str, Any] = {":status": status, ":updated": int(time.time() * 1000)}
         names = {"#status": "status"}
@@ -151,6 +153,13 @@ class DynamoRepository:
         if error_code is not None:
             values[":error"] = error_code
             updates += ", errorCode = :error"
+        if reconciliation is not None:
+            names["#reconciliation"] = "reconciliation"
+            values[":reconciliation"] = reconciliation
+            updates += ", #reconciliation = :reconciliation"
+        if clear_reconciliation:
+            names["#reconciliation"] = "reconciliation"
+            updates += " REMOVE #reconciliation"
         result = self._table.update_item(
             Key={"PK": self._user_pk(subject_hash), "SK": self._request_sk(request_id)},
             UpdateExpression=updates,
