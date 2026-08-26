@@ -64,6 +64,28 @@ Preflight = Callable[[], None]
 RECONCILIATION_DELAY_MS = 30_000
 
 
+def nonce_lane_readiness(nonce_lane: dict[str, Any] | None, *, now_ms: int | None = None) -> tuple[bool, str]:
+    """Return whether the API-key nonce lane is currently reusable.
+
+    Quarantine is time-bounded. Older code treated the persisted `quarantined`
+    flag as permanent even after `lockExpiresAt` elapsed, which could leave
+    withdrawals blocked forever after an ambiguous venue submission.
+    """
+    if not nonce_lane:
+        return True, "READY"
+    current_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    try:
+        lock_expires_at = int(nonce_lane.get("lockExpiresAt", 0))
+    except (TypeError, ValueError):
+        lock_expires_at = 0
+    lock_active = lock_expires_at > current_ms
+    if lock_active and nonce_lane.get("quarantined"):
+        return False, "QUARANTINED"
+    if lock_active:
+        return False, "BUSY"
+    return True, "READY"
+
+
 class ExecutionService:
     def __init__(self, settings: Settings, repository: DynamoRepository, gateway: LighterGateway) -> None:
         self.settings = settings
@@ -630,23 +652,57 @@ class ExecutionService:
             except Exception:
                 withdrawal_state = None
         nonce_lane = None
-        nonce_lane_ready = True
         if key_active and profile:
             nonce_lane = self.repo.get_nonce_lane(
                 int(profile["accountIndex"]),
                 int(profile["apiKeyIndex"]),
             )
-            if nonce_lane and (
-                nonce_lane.get("quarantined")
-                or int(nonce_lane.get("lockExpiresAt", 0)) > int(time.time() * 1000)
-            ):
-                nonce_lane_ready = False
-        nonce_lane_state = (
-            "QUARANTINED"
-            if not nonce_lane_ready and nonce_lane and nonce_lane.get("quarantined")
-            else "BUSY"
-            if not nonce_lane_ready
-            else "READY"
+        nonce_lane_ready, nonce_lane_state = nonce_lane_readiness(nonce_lane)
+
+        withdrawals_enabled = exits_allowed(exit_only_enabled=self.settings.exit_only_enabled)
+        withdrawal_gate_code = "READY"
+        withdrawal_gate_reason = "Withdrawal is ready."
+        if not withdrawals_enabled:
+            withdrawal_gate_code = "WITHDRAWALS_DISABLED"
+            withdrawal_gate_reason = "Withdrawals are temporarily disabled by the execution service."
+        elif not key_active:
+            withdrawal_gate_code = "SIGNER_NOT_READY"
+            withdrawal_gate_reason = "Aventa trading authority is not active for this Lighter account."
+        elif not nonce_lane_ready:
+            withdrawal_gate_code = f"NONCE_{nonce_lane_state}"
+            withdrawal_gate_reason = (
+                "A previous venue transaction has an unresolved result. Aventa will unlock this lane after reconciliation or expiry."
+                if nonce_lane_state == "QUARANTINED"
+                else "Another venue transaction is currently using this account. Retry in a moment."
+            )
+        elif withdrawal_state is None:
+            withdrawal_gate_code = "WITHDRAWAL_STATE_UNAVAILABLE"
+            withdrawal_gate_reason = "Aventa could not verify the authoritative Lighter withdrawal state yet."
+        elif withdrawal_state.has_open_positions:
+            withdrawal_gate_code = "OPEN_POSITIONS"
+            withdrawal_gate_reason = "Close all open positions before withdrawing."
+        elif withdrawal_state.pending_order_count > 0:
+            withdrawal_gate_code = "OPEN_ORDERS"
+            withdrawal_gate_reason = "Cancel all open orders before withdrawing."
+        elif withdrawal_state.available_balance <= 0:
+            withdrawal_gate_code = "NO_AVAILABLE_BALANCE"
+            withdrawal_gate_reason = "No USDG is currently available to withdraw from this Lighter account."
+        elif withdrawal_state.available_balance < withdrawal_state.asset.min_withdrawal_amount:
+            withdrawal_gate_code = "BELOW_MINIMUM"
+            withdrawal_gate_reason = (
+                "Withdrawable balance is below the Lighter minimum of "
+                f"{format(withdrawal_state.asset.min_withdrawal_amount, 'f')} USDG."
+            )
+
+        can_withdraw = (
+            withdrawals_enabled
+            and key_active
+            and nonce_lane_ready
+            and withdrawal_state is not None
+            and not withdrawal_state.has_open_positions
+            and withdrawal_state.pending_order_count == 0
+            and withdrawal_state.available_balance >= withdrawal_state.asset.min_withdrawal_amount
+            and withdrawal_state.available_balance > 0
         )
         body = {
             "mode": self.settings.execution_mode,
@@ -680,17 +736,7 @@ class ExecutionService:
                 and nonce_lane_ready
                 and market_executable
             ),
-            "canWithdraw": (
-                exits_allowed(exit_only_enabled=self.settings.exit_only_enabled)
-                and key_active
-                and nonce_lane_ready
-                and withdrawal_state is not None
-                and not withdrawal_state.has_open_positions
-                and withdrawal_state.pending_order_count == 0
-                and withdrawal_state.available_balance
-                >= withdrawal_state.asset.min_withdrawal_amount
-                and withdrawal_state.available_balance > 0
-            ),
+            "canWithdraw": can_withdraw,
             "withdrawal": {
                 "asset": "USDG",
                 "route": "PERP",
@@ -715,6 +761,11 @@ class ExecutionService:
                     if withdrawal_state is not None
                     else None
                 ),
+                "gateCode": withdrawal_gate_code,
+                "gateReason": withdrawal_gate_reason,
+                "keyReady": key_active,
+                "nonceLaneState": nonce_lane_state,
+                "withdrawalsEnabled": withdrawals_enabled,
             },
             "nonceLane": {
                 "state": nonce_lane_state,

@@ -1066,6 +1066,7 @@ export default function Home() {
           minimumAmount: execution.readiness.withdrawal.minimumAmount,
           openPositions: execution.readiness.withdrawal.openPositions,
           pendingOrderCount: execution.readiness.withdrawal.pendingOrderCount,
+          gateReason: execution.readiness.withdrawal.gateReason,
           busy: execution.busy,
           notice: execution.notice,
           error: execution.error,

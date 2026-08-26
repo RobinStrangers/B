@@ -29,6 +29,11 @@ export type ExecutionWithdrawalReadiness = {
   minimumAmount?: string;
   openPositions?: boolean;
   pendingOrderCount?: number;
+  gateCode?: string;
+  gateReason?: string;
+  keyReady?: boolean;
+  nonceLaneState?: 'READY' | 'BUSY' | 'QUARANTINED';
+  withdrawalsEnabled?: boolean;
 };
 export type ExecutionReadiness = {
   mode: 'off' | 'paper' | 'canary' | 'limited_live';
@@ -104,6 +109,13 @@ function normalizeReadiness(payload: unknown): ExecutionReadiness {
     minimumAmount: typeof rawWithdrawal?.minimumAmount === 'string' ? rawWithdrawal.minimumAmount : undefined,
     openPositions: typeof rawWithdrawal?.openPositions === 'boolean' ? rawWithdrawal.openPositions : undefined,
     pendingOrderCount: typeof rawWithdrawal?.pendingOrderCount === 'number' ? rawWithdrawal.pendingOrderCount : undefined,
+    gateCode: typeof rawWithdrawal?.gateCode === 'string' ? rawWithdrawal.gateCode : undefined,
+    gateReason: typeof rawWithdrawal?.gateReason === 'string' ? rawWithdrawal.gateReason : undefined,
+    keyReady: typeof rawWithdrawal?.keyReady === 'boolean' ? rawWithdrawal.keyReady : undefined,
+    nonceLaneState: rawWithdrawal?.nonceLaneState === 'READY' || rawWithdrawal?.nonceLaneState === 'BUSY' || rawWithdrawal?.nonceLaneState === 'QUARANTINED'
+      ? rawWithdrawal.nonceLaneState
+      : undefined,
+    withdrawalsEnabled: typeof rawWithdrawal?.withdrawalsEnabled === 'boolean' ? rawWithdrawal.withdrawalsEnabled : undefined,
   };
   const message = typeof root?.message === 'string'
     ? root.message

@@ -16,6 +16,7 @@ type AccountDrawerProps = {
     minimumAmount?: string;
     openPositions?: boolean;
     pendingOrderCount?: number;
+    gateReason?: string;
     busy: boolean;
     notice: string;
     error: string;
@@ -161,7 +162,7 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
               : parsedWithdrawalAmount > parsedWithdrawalAvailable
                 ? `Max ${withdrawal.availableBalance} USDG available`
                 : !withdrawal.canSubmit
-                  ? 'Withdrawal gate is not ready'
+                  ? (withdrawal.gateReason || 'Withdrawal gate is not ready')
                   : '';
   const maxTransferAmount = mode === 'deposit' ? maxDepositAmount : withdrawal.availableBalance;
   const historyKey = account.address ? account.address.toLowerCase() : '';

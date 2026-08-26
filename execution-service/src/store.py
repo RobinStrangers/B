@@ -379,8 +379,8 @@ class DynamoRepository:
                     ":false": False,
                 },
                 ConditionExpression=(
-                    "(attribute_not_exists(quarantined) OR quarantined = :false) AND "
-                    "(attribute_not_exists(lockOwner) OR lockExpiresAt < :now)"
+                    "(attribute_not_exists(lockOwner) OR lockExpiresAt < :now) AND "
+                    "(attribute_not_exists(quarantined) OR quarantined = :false OR lockExpiresAt < :now)"
                 ),
             )
         except Exception as exc:
