@@ -75,13 +75,11 @@ def _account_asset_balances(
     symbol: str,
     asset_id: int | None = None,
 ) -> tuple[Decimal, Decimal] | None:
-    """Return (total, free) for a multi-asset Lighter account asset.
+    """Return (total, free) from a matching multi-asset account row.
 
-    Robinhood Lighter uses unified/multi-asset accounts. In that mode the
-    top-level ``available_balance`` can be zero while the deposited collateral
-    lives in ``account.assets[]``. The asset row is therefore authoritative for
-    an asset-specific withdrawal. ``locked_balance`` is excluded from the free
-    amount so spot/order reservations can never be over-withdrawn.
+    This is a fallback source. Robinhood Lighter's top-level collateral and
+    available_balance remain the primary perp-account balances when populated;
+    some account modes expose the same USDG only through ``account.assets[]``.
     """
     wanted_symbol = symbol.strip().upper()
     for raw in _first_list(account, "assets", "account_assets", "accountAssets"):
@@ -101,6 +99,38 @@ def _account_asset_balances(
             raise VenueRejected("Venue asset balance is invalid", code="VENUE_RESPONSE_INVALID")
         return total, max(Decimal(0), total - locked)
     return None
+
+
+def _resolved_perp_usdg_balances(
+    account: dict[str, Any],
+    *,
+    symbol: str = "USDG",
+    asset_id: int | None = None,
+) -> tuple[Decimal, Decimal]:
+    """Return (total collateral, free collateral) for the perp account.
+
+    The public Robinhood Lighter account endpoint reports the live perp balance
+    in top-level ``collateral`` / ``available_balance``. Unified accounts can
+    instead leave those fields at zero and expose USDG in ``assets[]``. Use the
+    top-level values whenever they are populated so withdrawal readiness matches
+    the same free-collateral number shown by Aventa's trading account panel, and
+    fall back to the USDG asset row only when the top-level value is zero.
+    """
+    asset_balances = _account_asset_balances(account, symbol=symbol, asset_id=asset_id)
+    legacy_available = _decimal(
+        account.get("available_balance", account.get("availableBalance", "0")),
+        "available balance",
+    )
+    legacy_collateral = _decimal(
+        account.get("collateral", account.get("total_collateral", "0")),
+        "collateral",
+    )
+
+    asset_total = asset_balances[0] if asset_balances is not None else Decimal(0)
+    asset_free = asset_balances[1] if asset_balances is not None else Decimal(0)
+    total = legacy_collateral if legacy_collateral > 0 else asset_total
+    free = legacy_available if legacy_available > 0 else asset_free
+    return max(Decimal(0), total), max(Decimal(0), free)
 
 
 @dataclass(frozen=True)
@@ -539,18 +569,10 @@ class LighterGateway:
                     f"{symbol.upper()} is not withdrawable on this venue deployment",
                     http_status=423,
                 )
-            asset_balances = _account_asset_balances(
+            _, available = _resolved_perp_usdg_balances(
                 account,
                 symbol=resolved_asset.symbol,
                 asset_id=resolved_asset.asset_id,
-            )
-            available = (
-                asset_balances[1]
-                if asset_balances is not None
-                else _decimal(
-                    account.get("available_balance", account.get("availableBalance", "0")),
-                    "available balance",
-                )
             )
             has_positions = False
             for raw in _first_list(account, "positions"):
@@ -728,16 +750,9 @@ class LighterGateway:
             active = _first_list(_model_dict(active_result), "orders", "data")
             inactive = _first_list(_model_dict(inactive_result), "orders", "data")
             trades = _first_list(_model_dict(trades_result), "trades", "data")
-            usdg_balances = _account_asset_balances(account, symbol="USDG")
-            usdg_total = usdg_balances[0] if usdg_balances is not None else None
-            usdg_free = usdg_balances[1] if usdg_balances is not None else None
-            legacy_available = _decimal(
-                account.get("available_balance", account.get("availableBalance", "0")),
-                "available balance",
-            )
-            legacy_collateral = _decimal(account.get("collateral", "0"), "collateral")
+            usdg_total, usdg_free = _resolved_perp_usdg_balances(account, symbol="USDG")
             total_asset_value = _decimal(
-                account.get("total_asset_value", account.get("totalAssetValue", legacy_collateral)),
+                account.get("total_asset_value", account.get("totalAssetValue", usdg_total)),
                 "total asset value",
             )
             return {
@@ -746,11 +761,11 @@ class LighterGateway:
                         account.get("index", account.get("account_index", account_index)),
                         "account index",
                     ),
-                    "availableBalance": format(usdg_free if usdg_free is not None else legacy_available, "f"),
-                    "assetBalance": format(usdg_total if usdg_total is not None else legacy_collateral, "f"),
-                    "collateral": format(usdg_total if usdg_total is not None else legacy_collateral, "f"),
+                    "availableBalance": format(usdg_free, "f"),
+                    "assetBalance": format(usdg_total, "f"),
+                    "collateral": format(usdg_total, "f"),
                     "portfolioValue": format(
-                        total_asset_value if total_asset_value > 0 else (usdg_total or Decimal(0)),
+                        total_asset_value if total_asset_value > 0 else usdg_total,
                         "f",
                     ),
                     "pendingOrderCount": _integer(

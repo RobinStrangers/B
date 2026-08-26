@@ -123,6 +123,29 @@ class GatewayWithdrawalStateTests(unittest.TestCase):
         state = asyncio.run(self._gateway(account=account).withdrawal_state(43210, "USDG"))
         self.assertEqual(state.available_balance, Decimal("0.750000"))
 
+    def test_live_top_level_free_collateral_wins_when_asset_row_is_zero(self):
+        # Exact regression from the live Robinhood account UI: the perp account
+        # reports 1 USDG free collateral while the unified asset row is present
+        # but zero. Wallet/withdrawal must match the live perp collateral source.
+        account = {
+            "index": 43210,
+            "available_balance": "1.000000",
+            "collateral": "1.000000",
+            "total_asset_value": "1.000000",
+            "pending_order_count": 0,
+            "positions": [],
+            "assets": [
+                {
+                    "symbol": "USDG",
+                    "asset_id": 3,
+                    "balance": "0.000000",
+                    "locked_balance": "0.000000",
+                }
+            ],
+        }
+        state = asyncio.run(self._gateway(account=account).withdrawal_state(43210, "USDG"))
+        self.assertEqual(state.available_balance, Decimal("1.000000"))
+
     def test_open_position_still_blocks_exposure_gate(self):
         account = {
             "index": 43210,

@@ -417,7 +417,7 @@ function useMarketSnapshot(market?: Market) {
   return market && market.category !== 'crypto' ? { snapshot, status } : { snapshot: undefined, status: 'offline' as FeedStatus };
 }
 
-function useVenueAccount(address: string, market: Market) {
+function useVenueAccount(address: string, market: Market, accountIndex?: number) {
   const [snapshot, setSnapshot] = useState<VenueSnapshot>();
   const [status, setStatus] = useState<FeedStatus>('connecting');
 
@@ -431,6 +431,7 @@ function useVenueAccount(address: string, market: Market) {
       try {
         const params = new URLSearchParams({ symbol: market.base });
         if (address) params.set('address', address);
+        if (accountIndex !== undefined) params.set('accountIndex', String(accountIndex));
         const response = await fetch(`/api/venue/account?${params}`, { cache: 'no-store', signal: controller.signal });
         if (!response.ok) throw new Error('Venue feed retrying');
         const parsed = parseVenueSnapshot(await response.json());
@@ -458,7 +459,7 @@ function useVenueAccount(address: string, market: Market) {
       window.clearInterval(timer);
       controller?.abort();
     };
-  }, [address, market.base]);
+  }, [accountIndex, address, market.base]);
 
   return { snapshot, status };
 }
@@ -603,7 +604,7 @@ export default function Home() {
   const { snapshot: marketSnapshot, status: marketSnapshotStatus } = useMarketSnapshot(selected);
   const wallet = useRobinhoodAccount();
   const execution = useAventaExecution(selected.id);
-  const { snapshot: venueSnapshot, status: venueStatus } = useVenueAccount(wallet.address, selected);
+  const { snapshot: venueSnapshot, status: venueStatus } = useVenueAccount(wallet.address, selected, execution.readiness.accountIndex);
   const currentTicker = selected.derivativesSymbol
     ? tickers[selected.derivativesSymbol] ?? cryptoDetail.ticker
     : marketSnapshot
@@ -845,19 +846,28 @@ export default function Home() {
   const privatePositions = execution.activity.positions.flatMap((position) => normalizeExecutionPosition(position) ?? []);
   const venuePositions = privatePositions.length ? privatePositions : venueSnapshot?.positions ?? [];
   const venueAccount = venueSnapshot?.account;
+  const executionAccountIndex = execution.readiness.accountIndex;
+  const venueAccountMatchesExecution = Boolean(
+    venueAccount
+    && (executionAccountIndex === undefined || venueAccount.index === executionAccountIndex),
+  );
   const readinessWithdrawalBalance = execution.readiness.withdrawal.availableBalance;
   const activityAccount = execution.activity.account;
-  const activityWithdrawalBalance = activityAccount && activityAccount.index === execution.readiness.accountIndex
+  const activityWithdrawalBalance = activityAccount && activityAccount.index === executionAccountIndex
     ? activityAccount.availableBalance
     : undefined;
-  const withdrawalAvailableBalance = Number(readinessWithdrawalBalance) > 0
-    ? readinessWithdrawalBalance
-    : activityWithdrawalBalance && Number(activityWithdrawalBalance) > 0
+  // The same live venue free-collateral source used by the trading panel is
+  // authoritative for Wallet/Withdraw. Execution readiness remains the safety
+  // gate and backend validation source, but must not render a different balance.
+  const withdrawalAvailableBalance = venueAccountMatchesExecution && venueAccount
+    ? venueAccount.availableBalance
+    : activityWithdrawalBalance !== undefined
       ? activityWithdrawalBalance
       : readinessWithdrawalBalance;
   const venueBalanceCandidates = [
+    venueAccountMatchesExecution ? venueAccount?.collateral : undefined,
+    venueAccountMatchesExecution ? venueAccount?.availableBalance : undefined,
     execution.activity.account?.assetBalance,
-    execution.activity.account?.portfolioValue,
     execution.activity.account?.collateral,
     withdrawalAvailableBalance,
   ].filter((value): value is string => typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value));
@@ -1064,7 +1074,10 @@ export default function Home() {
           claimBusy: wallet.withdrawalClaimBusy,
           claimError: wallet.withdrawalClaimError,
           refreshClaim: wallet.refreshWithdrawalClaim,
-          refreshVenue: execution.refresh,
+          refreshVenue: async () => {
+            await execution.refresh();
+            window.dispatchEvent(new Event('aventa:venue-account-ready'));
+          },
           claim: claimWithdrawal,
         }}
         open={accountOpen}

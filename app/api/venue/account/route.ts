@@ -43,6 +43,37 @@ function normalizeMarketSymbol(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/(?:USDT|USDC|USDG|USD)$/, '');
 }
 
+function accountUsdgBalances(account: Record<string, unknown>) {
+  const legacyAvailableRaw = stringValue(account.available_balance ?? account.availableBalance) ?? '0';
+  const legacyCollateralRaw = stringValue(account.collateral ?? account.total_collateral) ?? '0';
+  const legacyAvailable = numberValue(legacyAvailableRaw) ?? 0;
+  const legacyCollateral = numberValue(legacyCollateralRaw) ?? 0;
+
+  const rawAssets = Array.isArray(account.assets)
+    ? account.assets
+    : Array.isArray(account.account_assets)
+      ? account.account_assets
+      : Array.isArray(account.accountAssets)
+        ? account.accountAssets
+        : [];
+  const usdgAsset = rawAssets
+    .map(record)
+    .filter(Boolean)
+    .find((asset) => {
+      const symbol = stringValue(asset?.symbol)?.trim().toUpperCase();
+      const assetId = numberValue(asset?.asset_id ?? asset?.assetId);
+      return symbol === 'USDG' || assetId === 3;
+    });
+  const assetTotal = numberValue(usdgAsset?.balance) ?? 0;
+  const assetLocked = Math.max(0, numberValue(usdgAsset?.locked_balance ?? usdgAsset?.lockedBalance) ?? 0);
+  const assetFree = Math.max(0, assetTotal - assetLocked);
+
+  return {
+    availableBalance: legacyAvailable > 0 ? legacyAvailableRaw : String(assetFree),
+    collateral: legacyCollateral > 0 ? legacyCollateralRaw : String(Math.max(0, assetTotal)),
+  };
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const address = url.searchParams.get('address')?.trim() ?? '';
@@ -64,7 +95,11 @@ export async function GET(request: Request) {
       ? markets.find((item) => normalizeMarketSymbol(stringValue(item.symbol) ?? '') === normalizeMarketSymbol(requestedSymbol))
       : undefined;
     const accounts = accountResult.status === 'fulfilled' ? accountRows(accountResult.value) : [];
-    const account = accounts[0];
+    const accountIndexParam = url.searchParams.get('accountIndex');
+    const requestedAccountIndex = accountIndexParam ? numberValue(accountIndexParam) : undefined;
+    const account = requestedAccountIndex === undefined
+      ? accounts[0]
+      : accounts.find((item) => numberValue(item.index ?? item.account_index) === requestedAccountIndex);
     const rawPositions = Array.isArray(account?.positions) ? account.positions : [];
     const positions = rawPositions.flatMap((value) => {
       const position = record(value);
@@ -84,6 +119,8 @@ export async function GET(request: Request) {
       openOrderCount: numberValue(position.open_order_count) ?? 0,
     })).filter((position) => Number(position.size) !== 0);
 
+    const usdgBalances = account ? accountUsdgBalances(account) : undefined;
+
     return Response.json({
       venue: {
         name: 'Lighter',
@@ -96,8 +133,8 @@ export async function GET(request: Request) {
       },
       account: account ? {
         index: numberValue(account.index ?? account.account_index),
-        availableBalance: stringValue(account.available_balance) ?? '0',
-        collateral: stringValue(account.collateral) ?? '0',
+        availableBalance: usdgBalances?.availableBalance ?? '0',
+        collateral: usdgBalances?.collateral ?? '0',
         portfolioValue: stringValue(account.total_asset_value ?? account.collateral) ?? '0',
         pendingOrderCount: numberValue(account.pending_order_count) ?? 0,
         crossInitialMarginRequirement: stringValue(account.cross_initial_margin_requirement) ?? '0',
