@@ -846,8 +846,9 @@ export default function Home() {
   const venuePositions = privatePositions.length ? privatePositions : venueSnapshot?.positions ?? [];
   const venueAccount = venueSnapshot?.account;
   const readinessWithdrawalBalance = execution.readiness.withdrawal.availableBalance;
-  const activityWithdrawalBalance = execution.activity.account?.index === execution.readiness.accountIndex
-    ? execution.activity.account.availableBalance
+  const activityAccount = execution.activity.account;
+  const activityWithdrawalBalance = activityAccount && activityAccount.index === execution.readiness.accountIndex
+    ? activityAccount.availableBalance
     : undefined;
   const withdrawalAvailableBalance = Number(readinessWithdrawalBalance) > 0
     ? readinessWithdrawalBalance
