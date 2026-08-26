@@ -412,7 +412,7 @@ class LighterGateway:
         try:
             response = await lighter.OrderApi(client).asset_details(_request_timeout=8.0)
             data = _model_dict(response)
-            for raw in _first_list(data, "asset_details", "assetDetails", "assets"):
+            for raw in _first_list(data, "asset_details", "assets_details", "assetDetails", "assetsDetails", "assets"):
                 asset = _model_dict(raw)
                 if str(asset.get("symbol", "")).strip().upper() != symbol.upper():
                     continue
@@ -472,7 +472,7 @@ class LighterGateway:
             account = _model_dict(accounts[0])
             asset_data = _model_dict(assets_result)
             resolved_asset = None
-            for raw in _first_list(asset_data, "asset_details", "assetDetails", "assets"):
+            for raw in _first_list(asset_data, "asset_details", "assets_details", "assetDetails", "assetsDetails", "assets"):
                 candidate = _model_dict(raw)
                 if str(candidate.get("symbol", "")).strip().upper() != symbol.upper():
                     continue

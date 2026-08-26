@@ -845,6 +845,15 @@ export default function Home() {
   const privatePositions = execution.activity.positions.flatMap((position) => normalizeExecutionPosition(position) ?? []);
   const venuePositions = privatePositions.length ? privatePositions : venueSnapshot?.positions ?? [];
   const venueAccount = venueSnapshot?.account;
+  const readinessWithdrawalBalance = execution.readiness.withdrawal.availableBalance;
+  const activityWithdrawalBalance = execution.activity.account?.index === execution.readiness.accountIndex
+    ? execution.activity.account.availableBalance
+    : undefined;
+  const withdrawalAvailableBalance = Number(readinessWithdrawalBalance) > 0
+    ? readinessWithdrawalBalance
+    : activityWithdrawalBalance && Number(activityWithdrawalBalance) > 0
+      ? activityWithdrawalBalance
+      : readinessWithdrawalBalance;
   const unrealizedPnl = venuePositions.reduce((sum, position) => sum + (Number(position.unrealizedPnl) || 0), 0);
   const portfolioValue = Number(venueAccount?.portfolioValue);
   const initialMargin = Number(venueAccount?.crossInitialMarginRequirement);
@@ -1034,7 +1043,7 @@ export default function Home() {
         account={wallet}
         withdrawal={{
           canSubmit: execution.readiness.canWithdraw,
-          availableBalance: execution.readiness.withdrawal.availableBalance,
+          availableBalance: withdrawalAvailableBalance,
           minimumAmount: execution.readiness.withdrawal.minimumAmount,
           openPositions: execution.readiness.withdrawal.openPositions,
           pendingOrderCount: execution.readiness.withdrawal.pendingOrderCount,
