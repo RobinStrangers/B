@@ -1,17 +1,18 @@
 'use client';
 
 import { TokenIcon } from '@web3icons/react/dynamic';
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import AuthSheet from './AuthSheet';
 import { useAventaAuth } from './useAventaAuth';
-import { shortAddress, type RobinhoodAccountState, type WalletAssetBalance } from './useRobinhoodAccount';
+import { shortAddress, type RobinhoodAccountState } from './useRobinhoodAccount';
 
 type AccountDrawerProps = {
   account: RobinhoodAccountState;
   withdrawal: {
     canSubmit: boolean;
     availableBalance: string;
+    venueBalance: string;
     minimumAmount?: string;
     openPositions?: boolean;
     pendingOrderCount?: number;
@@ -23,6 +24,7 @@ type AccountDrawerProps = {
     claimBusy: boolean;
     claimError: string;
     refreshClaim: () => Promise<boolean>;
+    refreshVenue: () => Promise<void>;
     claim: () => Promise<{ txHash: string }>;
   };
   open: boolean;
@@ -65,22 +67,6 @@ const drawerTabs: { id: DrawerTab; label: string }[] = [
   { id: 'transfer', label: 'Deposit / Withdraw' },
   { id: 'history', label: 'History' },
 ];
-
-function assetValue(asset: WalletAssetBalance) {
-  if (!asset.configured || asset.status === 'not-found') return 'Not on network';
-  if (asset.status === 'loading') return 'Refreshing…';
-  if (asset.status === 'error') return 'Retry required';
-  if (asset.status !== 'live' || asset.balance === undefined) return '—';
-  return `${asset.balance} ${asset.symbol}`;
-}
-
-function assetStatus(asset: WalletAssetBalance) {
-  if (!asset.configured || asset.status === 'not-found') return 'Contract not detected';
-  if (asset.status === 'live') return 'Live onchain balance';
-  if (asset.status === 'error') return 'Chain read needs retry';
-  if (asset.status === 'loading') return 'Reading Robinhood Chain';
-  return 'Connect wallet to read';
-}
 
 function parseHistoryResponse(value: unknown): VaultHistoryResponse | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -182,13 +168,6 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
   const historyScopeKey = `${historyKey}:${privyAuthenticated ? 'privy' : 'fallback'}`;
   const history = historyState?.key === historyScopeKey ? historyState.response : undefined;
   const historyLoading = Boolean(open && tab === 'history' && historyKey && historyState?.key !== historyScopeKey);
-  const liveAssetCount = account.assets.filter((asset) => asset.status === 'live').length;
-  const balanceFeedLabel = account.assets.some((asset) => asset.status === 'loading')
-    ? 'REFRESHING ONCHAIN'
-    : liveAssetCount > 0
-      ? `${liveAssetCount} LIVE ONCHAIN`
-      : 'CHAIN READ NEEDS RETRY';
-
   useEffect(() => {
     authOpenRef.current = authOpen;
   }, [authOpen]);
@@ -274,10 +253,10 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
     return () => controller.abort();
   }, [authFetch, historyKey, historyScopeKey, historyState?.key, open, privyAuthenticated, tab, vaultConfigured]);
 
-  const updatedLabel = useMemo(() => {
-    if (!account.updatedAt) return 'Awaiting wallet';
-    return `Updated ${new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(account.updatedAt)}`;
-  }, [account.updatedAt]);
+  useEffect(() => {
+    if (!open || tab !== 'transfer' || mode !== 'deposit' || !account.address || !account.isRobinhoodChain) return;
+    void account.refreshWalletBalances();
+  }, [account.address, account.isRobinhoodChain, account.refreshWalletBalances, mode, open, tab]);
 
   const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
@@ -383,20 +362,18 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
 
           {account.address && tab === 'balances' && (
             <div className="account-balances-view" role="tabpanel" id="account-panel-balances" aria-labelledby="account-tab-balances">
-              <div className="account-live-row"><span><i />{balanceFeedLabel}</span><small>{updatedLabel}</small><button type="button" onClick={() => void account.refresh()} aria-label="Refresh wallet balances">↻</button></div>
+              <div className="account-live-row"><span><i />AVENTA ACCOUNT</span><small>LIVE VENUE BALANCE</small><button type="button" onClick={() => void withdrawal.refreshVenue()} aria-label="Refresh Aventa balance">↻</button></div>
               <div className="account-asset-list">
-                {account.assets.map((asset) => (
-                  <article key={asset.symbol}>
-                    <TokenIcon symbol={asset.symbol} variant="branded" size={39} fallback={asset.symbol.slice(0, 1)} />
-                    <div>
-                      <strong>{asset.symbol}</strong>
-                      <small title={asset.contractAddress}>{asset.identity}{asset.contractAddress ? ` · ${shortAddress(asset.contractAddress)}` : ''}</small>
-                    </div>
-                    <div><strong>{assetValue(asset)}</strong><small>{assetStatus(asset)}</small></div>
-                  </article>
-                ))}
+                <article>
+                  <TokenIcon symbol="USDG" variant="branded" size={39} fallback="U" />
+                  <div>
+                    <strong>USDG</strong>
+                    <small>Aventa trading balance · Robinhood Lighter</small>
+                  </div>
+                  <div><strong>{withdrawal.venueBalance} USDG</strong><small>{withdrawal.availableBalance} USDG available to withdraw</small></div>
+                </article>
               </div>
-              <div className="account-balance-disclosure"><strong>Wallet balance</strong><p>These values are read from Robinhood Chain and refresh every 12 seconds. Trading collateral activates after a verified venue account is linked.</p></div>
+              <div className="account-balance-disclosure"><strong>Aventa balance</strong><p>This screen shows funds held in your Aventa/Lighter trading account. Your personal wallet token balance is not read here; Aventa reads it only when you open Deposit so the amount and MAX controls can use the wallet balance.</p></div>
               <button className="account-wallet-disconnect" type="button" onClick={() => void account.disconnect()} disabled={account.busy}>Disconnect wallet</button>
             </div>
           )}
@@ -406,9 +383,9 @@ export default function AccountDrawer({ account, withdrawal, open, onClose }: Ac
               <div className="account-transfer-mode">{(['deposit', 'withdraw'] as TransferMode[]).map((item) => <button type="button" aria-pressed={mode === item} className={mode === item ? 'active' : ''} onClick={() => { setMode(item); setAmount(''); }} key={item}>{item === 'deposit' ? 'Deposit' : 'Withdraw'}</button>)}</div>
               <span className="account-field-label">Asset</span>
               <div className="account-asset-selector">
-                {account.assets.filter((asset) => asset.symbol === 'USDG').map((asset) => <button type="button" aria-pressed={selectedAsset === asset.symbol} className={selectedAsset === asset.symbol ? 'active' : ''} onClick={() => setSelectedAsset(asset.symbol)} key={asset.symbol}><TokenIcon symbol={asset.symbol} variant="branded" size={22} fallback={asset.symbol.slice(0, 1)} /><span>{asset.symbol}</span><small>{asset.balance ?? '—'}</small></button>)}
+                <button type="button" aria-pressed={selectedAsset === 'USDG'} className={selectedAsset === 'USDG' ? 'active' : ''} onClick={() => setSelectedAsset('USDG')}><TokenIcon symbol="USDG" variant="branded" size={22} fallback="U" /><span>USDG</span><small>{mode === 'deposit' ? (currentAsset?.status === 'loading' ? 'Reading wallet…' : currentAsset?.balance ?? '—') : withdrawal.availableBalance}</small></button>
               </div>
-              <label className="account-amount-field"><span><b>Amount</b><small>{mode === 'deposit' ? `Wallet available ${currentAsset?.balance ?? '—'} ${selectedAsset}` : `Venue available ${withdrawal.availableBalance} ${selectedAsset}`}</small></span><div><input inputMode="decimal" value={amount} onChange={handleAmountChange} placeholder="0.00" aria-label={`${mode} amount`} /><button type="button" disabled={!maxTransferAmount || Number(maxTransferAmount) <= 0} onClick={() => maxTransferAmount && setAmount(maxTransferAmount)}>MAX</button><strong>{selectedAsset}</strong></div></label>
+              <label className="account-amount-field"><span><b>Amount</b><small>{mode === 'deposit' ? (currentAsset?.status === 'loading' ? 'Reading USDG from connected wallet…' : `Wallet available ${currentAsset?.balance ?? '—'} ${selectedAsset}`) : `Aventa available ${withdrawal.availableBalance} ${selectedAsset}`}</small></span><div><input inputMode="decimal" value={amount} onChange={handleAmountChange} placeholder="0.00" aria-label={`${mode} amount`} /><button type="button" disabled={!maxTransferAmount || Number(maxTransferAmount) <= 0} onClick={() => maxTransferAmount && setAmount(maxTransferAmount)}>MAX</button><strong>{selectedAsset}</strong></div></label>
               <div className="account-transfer-summary"><div><span>Route</span><strong>{mode === 'deposit' ? 'Wallet → Robinhood Lighter' : 'Robinhood Lighter → Verified wallet'}</strong></div><div><span>Network</span><strong>Robinhood Chain · 4663</strong></div><div><span>Collateral</span><strong>USDG · Perps margin</strong></div></div>
               {mode === 'deposit' ? (
                 <button className="account-transfer-submit" type="button" disabled={!depositReady} onClick={() => void handleDeposit()}>{account.busy ? 'Waiting for wallet / chain…' : !account.ownershipVerified ? 'Verify wallet to deposit' : 'Deposit USDG & onboard'}</button>

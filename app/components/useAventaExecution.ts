@@ -10,6 +10,7 @@ export type ExecutionActivity = {
   account?: {
     index?: number;
     availableBalance: string;
+    assetBalance: string;
     collateral: string;
     portfolioValue: string;
     pendingOrderCount: number;
@@ -150,6 +151,7 @@ function normalizeActivity(payload: unknown): ExecutionActivity {
     ? {
       index: typeof rawAccount.index === 'number' ? rawAccount.index : undefined,
       availableBalance: rawAccount.availableBalance,
+      assetBalance: typeof rawAccount.assetBalance === 'string' ? rawAccount.assetBalance : (typeof rawAccount.collateral === 'string' ? rawAccount.collateral : '0'),
       collateral: typeof rawAccount.collateral === 'string' ? rawAccount.collateral : '0',
       portfolioValue: typeof rawAccount.portfolioValue === 'string' ? rawAccount.portfolioValue : '0',
       pendingOrderCount: typeof rawAccount.pendingOrderCount === 'number' ? rawAccount.pendingOrderCount : 0,

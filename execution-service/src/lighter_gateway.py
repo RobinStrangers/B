@@ -69,6 +69,40 @@ def _decimal(value: Any, field: str) -> Decimal:
     return result
 
 
+def _account_asset_balances(
+    account: dict[str, Any],
+    *,
+    symbol: str,
+    asset_id: int | None = None,
+) -> tuple[Decimal, Decimal] | None:
+    """Return (total, free) for a multi-asset Lighter account asset.
+
+    Robinhood Lighter uses unified/multi-asset accounts. In that mode the
+    top-level ``available_balance`` can be zero while the deposited collateral
+    lives in ``account.assets[]``. The asset row is therefore authoritative for
+    an asset-specific withdrawal. ``locked_balance`` is excluded from the free
+    amount so spot/order reservations can never be over-withdrawn.
+    """
+    wanted_symbol = symbol.strip().upper()
+    for raw in _first_list(account, "assets", "account_assets", "accountAssets"):
+        row = _model_dict(raw)
+        row_symbol = str(row.get("symbol", "")).strip().upper()
+        row_asset_id = row.get("asset_id", row.get("assetId"))
+        symbol_matches = bool(row_symbol) and row_symbol == wanted_symbol
+        id_matches = asset_id is not None and row_asset_id is not None and _integer(row_asset_id, "asset id") == asset_id
+        if not symbol_matches and not id_matches:
+            continue
+        total = _decimal(row.get("balance", "0"), f"{wanted_symbol} asset balance")
+        locked = _decimal(
+            row.get("locked_balance", row.get("lockedBalance", "0")),
+            f"{wanted_symbol} locked balance",
+        )
+        if total < 0 or locked < 0:
+            raise VenueRejected("Venue asset balance is invalid", code="VENUE_RESPONSE_INVALID")
+        return total, max(Decimal(0), total - locked)
+    return None
+
+
 @dataclass(frozen=True)
 class VenueMarket:
     symbol: str
@@ -505,9 +539,18 @@ class LighterGateway:
                     f"{symbol.upper()} is not withdrawable on this venue deployment",
                     http_status=423,
                 )
-            available = _decimal(
-                account.get("available_balance", account.get("availableBalance", "0")),
-                "available balance",
+            asset_balances = _account_asset_balances(
+                account,
+                symbol=resolved_asset.symbol,
+                asset_id=resolved_asset.asset_id,
+            )
+            available = (
+                asset_balances[1]
+                if asset_balances is not None
+                else _decimal(
+                    account.get("available_balance", account.get("availableBalance", "0")),
+                    "available balance",
+                )
             )
             has_positions = False
             for raw in _first_list(account, "positions"):
@@ -685,18 +728,30 @@ class LighterGateway:
             active = _first_list(_model_dict(active_result), "orders", "data")
             inactive = _first_list(_model_dict(inactive_result), "orders", "data")
             trades = _first_list(_model_dict(trades_result), "trades", "data")
+            usdg_balances = _account_asset_balances(account, symbol="USDG")
+            usdg_total = usdg_balances[0] if usdg_balances is not None else None
+            usdg_free = usdg_balances[1] if usdg_balances is not None else None
+            legacy_available = _decimal(
+                account.get("available_balance", account.get("availableBalance", "0")),
+                "available balance",
+            )
+            legacy_collateral = _decimal(account.get("collateral", "0"), "collateral")
+            total_asset_value = _decimal(
+                account.get("total_asset_value", account.get("totalAssetValue", legacy_collateral)),
+                "total asset value",
+            )
             return {
                 "account": {
                     "index": _integer(
                         account.get("index", account.get("account_index", account_index)),
                         "account index",
                     ),
-                    "availableBalance": str(
-                        account.get("available_balance", account.get("availableBalance", "0"))
-                    ),
-                    "collateral": str(account.get("collateral", "0")),
-                    "portfolioValue": str(
-                        account.get("total_asset_value", account.get("collateral", "0"))
+                    "availableBalance": format(usdg_free if usdg_free is not None else legacy_available, "f"),
+                    "assetBalance": format(usdg_total if usdg_total is not None else legacy_collateral, "f"),
+                    "collateral": format(usdg_total if usdg_total is not None else legacy_collateral, "f"),
+                    "portfolioValue": format(
+                        total_asset_value if total_asset_value > 0 else (usdg_total or Decimal(0)),
+                        "f",
                     ),
                     "pendingOrderCount": _integer(
                         account.get("pending_order_count", account.get("pendingOrderCount", 0)),

@@ -82,6 +82,47 @@ class GatewayWithdrawalStateTests(unittest.TestCase):
         self.assertEqual(state.pending_order_count, 0)
         self.assertEqual(state.asset.asset_id, 3)
 
+    def test_unified_account_uses_usdg_asset_balance_when_top_level_available_is_zero(self):
+        account = {
+            "index": 43210,
+            "account_trading_mode": 1,
+            "available_balance": "0.000000",
+            "collateral": "0.000000",
+            "total_asset_value": "1.000000",
+            "pending_order_count": 0,
+            "positions": [],
+            "assets": [
+                {
+                    "symbol": "USDG",
+                    "asset_id": 3,
+                    "balance": "1.000000",
+                    "locked_balance": "0.000000",
+                    "margin_balance": "1.000000",
+                }
+            ],
+        }
+        state = asyncio.run(self._gateway(account=account).withdrawal_state(43210, "USDG"))
+        self.assertEqual(state.available_balance, Decimal("1.000000"))
+
+    def test_unified_account_excludes_locked_usdg_from_withdrawable_balance(self):
+        account = {
+            "index": 43210,
+            "account_trading_mode": 1,
+            "available_balance": "0.000000",
+            "pending_order_count": 0,
+            "positions": [],
+            "assets": [
+                {
+                    "symbol": "USDG",
+                    "asset_id": 3,
+                    "balance": "1.000000",
+                    "locked_balance": "0.250000",
+                }
+            ],
+        }
+        state = asyncio.run(self._gateway(account=account).withdrawal_state(43210, "USDG"))
+        self.assertEqual(state.available_balance, Decimal("0.750000"))
+
     def test_open_position_still_blocks_exposure_gate(self):
         account = {
             "index": 43210,

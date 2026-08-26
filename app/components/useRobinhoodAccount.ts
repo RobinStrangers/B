@@ -365,7 +365,7 @@ export function useRobinhoodAccount() {
     account: string,
     generation = ++requestGeneration.current,
   ) => {
-    if (generation !== requestGeneration.current) return;
+    if (generation !== requestGeneration.current) return undefined;
     setAssets((current) => current.map((asset) => asset.configured ? { ...asset, status: 'loading' } : asset));
     try {
       const response = await fetch(`/api/chain/balances?address=${encodeURIComponent(account)}`, {
@@ -375,15 +375,17 @@ export function useRobinhoodAccount() {
       if (!response.ok) throw new Error('Chain read failed.');
       const snapshot = parseBalanceSnapshot(await response.json());
       if (!snapshot) throw new Error('Chain read was malformed.');
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current) return undefined;
       setError('');
       setAssets(snapshot.assets);
       setUpdatedAt(snapshot.updatedAt);
+      return snapshot;
     } catch {
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current) return undefined;
       setAssets((current) => current.map((asset) => asset.configured ? { ...asset, status: 'error' } : asset));
       setUpdatedAt(undefined);
       setError('Robinhood Chain did not return a balance snapshot. Retry in a moment.');
+      return undefined;
     }
   }, []);
 
@@ -529,10 +531,12 @@ export function useRobinhoodAccount() {
     setChainId(normalizedChain);
     ownershipRequestGeneration.current += 1;
     setVerifiedAddress('');
+    // Do not read the connected wallet's token balances during normal Aventa
+    // navigation. Those balances are only needed when the user explicitly
+    // opens the Deposit flow. The Wallet screen itself is venue-account state.
     setAssets(initialAssets());
     setUpdatedAt(undefined);
-    if (nextAddress) await refreshBalances(nextAddress, generation);
-  }, [privy.authenticated, refreshBalances]);
+  }, [privy.authenticated]);
 
   useEffect(() => {
     if ((!walletsReady || !privy.ready) && !privy.error) return;
@@ -612,17 +616,6 @@ export function useRobinhoodAccount() {
       if (providerRef.current === provider) providerRef.current = undefined;
     };
   }, [connectedWallet, privy.authenticated, privy.error, privy.ready, resolveProvider, synchronize, walletDisabled, walletsReady]);
-
-  useEffect(() => {
-    if (!address) return;
-    const refreshVisible = () => { if (document.visibilityState === 'visible') void refreshBalances(address); };
-    document.addEventListener('visibilitychange', refreshVisible);
-    const interval = window.setInterval(refreshVisible, 30_000);
-    return () => {
-      document.removeEventListener('visibilitychange', refreshVisible);
-      window.clearInterval(interval);
-    };
-  }, [address, refreshBalances]);
 
   useEffect(() => {
     if (!address || !isRobinhoodChain) {
@@ -846,12 +839,14 @@ export function useRobinhoodAccount() {
     }
   }, [address, assets, connectedWallet, ownershipVerified, refreshBalances, resolveProvider]);
 
+  const refreshWalletBalances = useCallback(async () => {
+    if (!address) return undefined;
+    return refreshBalances(address);
+  }, [address, refreshBalances]);
+
   const refresh = useCallback(async () => {
-    if (address) await Promise.all([
-      refreshBalances(address),
-      refreshWithdrawalClaim(address),
-    ]);
-  }, [address, refreshBalances, refreshWithdrawalClaim]);
+    if (address) await refreshWithdrawalClaim(address);
+  }, [address, refreshWithdrawalClaim]);
 
   const signMessage = useCallback(async (message: string) => {
     const provider = await resolveProvider();
@@ -882,18 +877,29 @@ export function useRobinhoodAccount() {
       throw new Error('Robinhood Lighter requires a minimum deposit of 1 USDG.');
     }
 
-    const usdgBalance = assets.find((asset) => asset.symbol === 'USDG');
-    if (usdgBalance?.status === 'live' && usdgBalance.balance && /^\d+(?:\.\d+)?$/.test(usdgBalance.balance)) {
-      const walletBalance = parseUnits(usdgBalance.balance, ROBINHOOD_USDG_DECIMALS);
-      if (rawAmount > walletBalance) throw new Error('Deposit amount exceeds the USDG available in this wallet.');
+    setBusy(true);
+    const walletSnapshot = await refreshBalances(address);
+    if (!walletSnapshot) {
+      setBusy(false);
+      throw new Error("Aventa could not read this wallet\'s Robinhood Chain balances for the deposit. Retry in a moment.");
+    }
+    const usdgBalance = walletSnapshot.assets.find((asset) => asset.symbol === 'USDG');
+    if (!usdgBalance?.balance || usdgBalance.status !== 'live' || !/^\d+(?:\.\d+)?$/.test(usdgBalance.balance)) {
+      setBusy(false);
+      throw new Error('Aventa could not verify the USDG available in this wallet.');
+    }
+    const walletBalance = parseUnits(usdgBalance.balance, ROBINHOOD_USDG_DECIMALS);
+    if (rawAmount > walletBalance) {
+      setBusy(false);
+      throw new Error('Deposit amount exceeds the USDG available in this wallet.');
     }
 
-    const ethBalance = assets.find((asset) => asset.symbol === 'ETH');
+    const ethBalance = walletSnapshot.assets.find((asset) => asset.symbol === 'ETH');
     if (ethBalance?.status === 'live' && ethBalance.balance && Number(ethBalance.balance) <= 0) {
+      setBusy(false);
       throw new Error('This wallet needs a small amount of ETH on Robinhood Chain for gas.');
     }
 
-    setBusy(true);
     setError('');
     try {
       let provider = await resolveProvider();
@@ -1005,7 +1011,7 @@ export function useRobinhoodAccount() {
     } finally {
       setBusy(false);
     }
-  }, [address, assets, authFetch, connectedWallet, ownershipVerified, refreshBalances, resolveProvider, verifyOwnershipWithProvider]);
+  }, [address, authFetch, connectedWallet, ownershipVerified, refreshBalances, resolveProvider, verifyOwnershipWithProvider]);
 
   const disconnect = useCallback(async () => {
     requestGeneration.current += 1;
@@ -1042,6 +1048,7 @@ export function useRobinhoodAccount() {
     ownershipVerified,
     verificationBusy,
     refresh,
+    refreshWalletBalances,
     refreshOwnershipVerification,
     refreshWithdrawalClaim,
     signMessage,
@@ -1051,7 +1058,7 @@ export function useRobinhoodAccount() {
     withdrawalClaimBusy,
     withdrawalClaimError,
     withdrawalClaimReady,
-  }), [address, assets, busy, claimPendingWithdrawalUsdg, connect, depositUsdg, disconnect, error, isRobinhoodChain, ownershipVerified, refresh, refreshOwnershipVerification, refreshWithdrawalClaim, signMessage, switchNetwork, updatedAt, verificationBusy, verifyOwnership, withdrawalClaimBusy, withdrawalClaimError, withdrawalClaimReady]);
+  }), [address, assets, busy, claimPendingWithdrawalUsdg, connect, depositUsdg, disconnect, error, isRobinhoodChain, ownershipVerified, refresh, refreshWalletBalances, refreshOwnershipVerification, refreshWithdrawalClaim, signMessage, switchNetwork, updatedAt, verificationBusy, verifyOwnership, withdrawalClaimBusy, withdrawalClaimError, withdrawalClaimReady]);
 }
 
 export type RobinhoodAccountState = ReturnType<typeof useRobinhoodAccount>;

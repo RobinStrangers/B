@@ -854,6 +854,13 @@ export default function Home() {
     : activityWithdrawalBalance && Number(activityWithdrawalBalance) > 0
       ? activityWithdrawalBalance
       : readinessWithdrawalBalance;
+  const venueBalanceCandidates = [
+    execution.activity.account?.assetBalance,
+    execution.activity.account?.portfolioValue,
+    execution.activity.account?.collateral,
+    withdrawalAvailableBalance,
+  ].filter((value): value is string => typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value));
+  const venueUsdgBalance = venueBalanceCandidates.find((value) => Number(value) > 0) ?? venueBalanceCandidates[0] ?? '0';
   const unrealizedPnl = venuePositions.reduce((sum, position) => sum + (Number(position.unrealizedPnl) || 0), 0);
   const portfolioValue = Number(venueAccount?.portfolioValue);
   const initialMargin = Number(venueAccount?.crossInitialMarginRequirement);
@@ -1044,6 +1051,7 @@ export default function Home() {
         withdrawal={{
           canSubmit: execution.readiness.canWithdraw,
           availableBalance: withdrawalAvailableBalance,
+          venueBalance: venueUsdgBalance,
           minimumAmount: execution.readiness.withdrawal.minimumAmount,
           openPositions: execution.readiness.withdrawal.openPositions,
           pendingOrderCount: execution.readiness.withdrawal.pendingOrderCount,
@@ -1055,6 +1063,7 @@ export default function Home() {
           claimBusy: wallet.withdrawalClaimBusy,
           claimError: wallet.withdrawalClaimError,
           refreshClaim: wallet.refreshWithdrawalClaim,
+          refreshVenue: execution.refresh,
           claim: claimWithdrawal,
         }}
         open={accountOpen}
