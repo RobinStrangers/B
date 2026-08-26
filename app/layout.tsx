@@ -43,7 +43,7 @@ export const metadata: Metadata = {
   },
 
   other: {
-  'virtual-protocol-site-verification': '7a3a46d3613dfbbca3e7a93f932a1a7f',
+  'virtual-protocol-site-verification': '0bc381a221039d1cd89b8ad5572351da',
 },
   
   description: 'A live multi-asset reference terminal and perpetual trading interface for Robinhood Chain.',
