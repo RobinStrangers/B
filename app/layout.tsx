@@ -41,10 +41,6 @@ export const metadata: Metadata = {
     default: 'Aventa — Move with intent. Trade with clarity.',
     template: '%s · Aventa',
   },
-
-  other: {
-  'virtual-protocol-site-verification': '0bc381a221039d1cd89b8ad5572351da',
-},
   
   description: 'A live multi-asset reference terminal and perpetual trading interface for Robinhood Chain.',
   keywords: ['perpetual markets', 'Robinhood Chain', 'crypto', 'forex', 'metals', 'commodities', 'equity references'],
@@ -70,6 +66,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
 
   return (
     <html lang="en">
+      <head>
+        <meta
+          name="virtual-protocol-site-verification"
+          content="0bc381a221039d1cd89b8ad5572351da"
+        />
+      </head>
+
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <Providers privyAppId={privyAppId}>{children}</Providers>
       </body>
